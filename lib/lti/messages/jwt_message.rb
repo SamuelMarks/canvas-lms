@@ -52,6 +52,7 @@ module Lti::Messages
       add_roles_claims! if include_claims?(:roles)
       add_custom_params_claims! if include_claims?(:custom_params)
       add_names_and_roles_service_claims! if include_names_and_roles_service_claims?
+      add_lti11_legacy_user_id!
 
       @expander.expand_variables!(@message.extensions)
       @message.validate! if validate_launch
@@ -72,7 +73,7 @@ module Lti::Messages
       @message.iat = Time.zone.now.to_i
       @message.iss = Canvas::Security.config['lti_iss']
       @message.nonce = SecureRandom.uuid
-      @message.sub = old_lti_id || @user.lti_id
+      @message.sub = @user.lookup_lti_id(@context)
       @message.target_link_uri = target_link_uri
     end
 
@@ -80,12 +81,6 @@ module Lti::Messages
       @opts[:target_link_uri] ||
       @tool.extension_setting(@opts[:resource_type], :target_link_uri) ||
       @tool.url
-    end
-
-    def old_lti_id
-      @context.shard.activate do
-        @user.past_lti_ids.where(context: @context).take&.user_lti_id
-      end
     end
 
     def add_context_claims!
@@ -142,6 +137,10 @@ module Lti::Messages
 
     def add_mentorship_claims!
       @message.role_scope_mentor = current_observee_list if current_observee_list.present?
+    end
+
+    def add_lti11_legacy_user_id!
+      @message.lti11_legacy_user_id = @tool.opaque_identifier_for(@user)
     end
 
     def include_names_and_roles_service_claims?

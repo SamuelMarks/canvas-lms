@@ -20,7 +20,8 @@ import React from 'react'
 import {shape, object, func, string, oneOfType, arrayOf, node} from 'prop-types'
 import {ScreenReaderContent} from '@instructure/ui-a11y'
 import {View, Flex} from '@instructure/ui-layout'
-import {Heading, List, Spinner, Text, Avatar, Badge} from '@instructure/ui-elements'
+import {Heading, List, Text, Avatar, Badge} from '@instructure/ui-elements'
+import {Spinner} from '@instructure/ui-spinner'
 import {Button} from '@instructure/ui-buttons'
 import {ToggleDetails} from '@instructure/ui-toggle-details'
 import {
@@ -32,11 +33,14 @@ import {
   IconLockLine,
   IconQuestionLine,
   IconInboxLine,
-  IconCalendarMonthLine
+  IconCalendarMonthLine,
+  IconClockLine
 } from '@instructure/ui-icons'
 import I18n from 'i18n!MobileGlobalMenu'
 import HelpDialog from '../help_dialog/HelpDialog'
 import LogoutButton from './LogoutButton'
+import HighContrastModeToggle from './trays/HighContrastModeToggle'
+import HistoryList from '../history_list/HistoryList'
 
 function ActiveText({children, url}) {
   return window.location.pathname.startsWith(url) ? <Text weight="bold">{children}</Text> : children
@@ -68,7 +72,7 @@ export default class MobileGlobalMenu extends React.Component {
     current_user: ENV.current_user
   }
 
-  componentWillMount() {
+  UNSAFE_componentWillMount() {
     // this is all the stuff that relies on the DOM of the desktop global nav
     const showGroups = !!document.getElementById('global_nav_groups_link')
 
@@ -137,6 +141,7 @@ export default class MobileGlobalMenu extends React.Component {
                         name={this.props.current_user.display_name}
                         src={this.props.current_user.avatar_image_url}
                         size="x-small"
+                        data-fs-exclude
                       />
                     </Flex.Item>
                     <Flex.Item>
@@ -161,6 +166,9 @@ export default class MobileGlobalMenu extends React.Component {
                   )}
                   <List.Item>
                     <LogoutButton variant="link" fluidWidth />
+                  </List.Item>
+                  <List.Item>
+                    <HighContrastModeToggle isMobile />
                   </List.Item>
                 </List>
               </ToggleDetails>
@@ -337,11 +345,11 @@ export default class MobileGlobalMenu extends React.Component {
                 </Flex.Item>
                 <Flex.Item>
                   <Text size="medium">{I18n.t('Inbox')}</Text>
-                  {!!this.props.DesktopNavComponent.state.unread_count && (
+                  {!!this.props.DesktopNavComponent.state.unreadInboxCount && (
                     <Badge
                       standalone
                       margin="0 small"
-                      count={this.props.DesktopNavComponent.state.unread_count}
+                      count={this.props.DesktopNavComponent.state.unreadInboxCount}
                     />
                   )}
                 </Flex.Item>
@@ -378,6 +386,33 @@ export default class MobileGlobalMenu extends React.Component {
               </Button>
             </List.Item>
           ))}
+
+          {ENV.FEATURES?.recent_history && (
+            <List.Item>
+              <ToggleDetails
+                iconPosition="end"
+                fluidWidth
+                onToggle={ensureLoaded('history')}
+                summary={
+                  <Flex padding="xx-small small">
+                    <Flex.Item width="3rem">
+                      <IconClockLine inline={false} size="small" color="brand" />
+                    </Flex.Item>
+                    <Flex.Item>
+                      <Text color="brand">{I18n.t('History')}</Text>
+                    </Flex.Item>
+                  </Flex>
+                }
+              >
+                <View as="div" margin="0 0 0 xx-large">
+                  <HistoryList
+                    history={this.props.DesktopNavComponent.state.history}
+                    hasLoaded={this.props.DesktopNavComponent.state.historyAreLoaded}
+                  />
+                </View>
+              </ToggleDetails>
+            </List.Item>
+          )}
 
           {true /* TODO: put a check for if we should show help */ && (
             <List.Item>

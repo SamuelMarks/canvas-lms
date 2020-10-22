@@ -181,7 +181,8 @@ describe Enrollment do
     end
 
     it "should return the sis enrollment type otherwise" do
-      e = TaEnrollment.new
+      c = Account.default.courses.create!
+      e = TaEnrollment.create(course: c)
       expect(e.sis_role).to eq 'ta'
     end
   end
@@ -782,6 +783,76 @@ describe Enrollment do
         end
       end
 
+      describe '#computed_current_points' do
+        it 'uses the value from the associated score object, if one exists' do
+          @enrollment.scores.create!(current_points: 80.3)
+          expect(@enrollment.computed_current_points).to eq 80.3
+        end
+
+        it 'uses the value from the associated score object, even if it is nil' do
+          @enrollment.scores.create!(current_points: nil)
+          expect(@enrollment.computed_current_points).to be_nil
+        end
+
+        it 'ignores grading period scores when passed no arguments' do
+          @enrollment.scores.create!(current_points: 80.3, grading_period: period)
+          expect(@enrollment.computed_current_points).to be_nil
+        end
+
+        it 'ignores soft-deleted scores' do
+          score = @enrollment.scores.create!(current_points: 80.3)
+          score.destroy
+          expect(@enrollment.computed_current_points).to be_nil
+        end
+
+        it 'computes current points for a given grading period id' do
+          @enrollment.scores.create!(current_points: 80.3)
+          @enrollment.scores.create!(current_points: 70.6, grading_period: period)
+          current_points = @enrollment.computed_current_points(grading_period_id: period.id)
+          expect(current_points).to eq 70.6
+        end
+
+        it 'returns nil if a grading period score is requested and does not exist' do
+          current_points = @enrollment.computed_current_points(grading_period_id: period.id)
+          expect(current_points).to be_nil
+        end
+      end
+
+      describe '#unposted_current_points' do
+        it 'uses the value from the associated score object, if one exists' do
+          @enrollment.scores.create!(unposted_current_points: 80.3)
+          expect(@enrollment.unposted_current_points).to eq 80.3
+        end
+
+        it 'uses the value from the associated score object, even if it is nil' do
+          @enrollment.scores.create!(unposted_current_points: nil)
+          expect(@enrollment.unposted_current_points).to be_nil
+        end
+
+        it 'ignores grading period scores when passed no arguments' do
+          @enrollment.scores.create!(unposted_current_points: 80.3, grading_period: period)
+          expect(@enrollment.unposted_current_points).to be_nil
+        end
+
+        it 'ignores soft-deleted scores' do
+          score = @enrollment.scores.create!(unposted_current_points: 80.3)
+          score.destroy
+          expect(@enrollment.unposted_current_points).to be_nil
+        end
+
+        it 'computes current points for a given grading period id' do
+          @enrollment.scores.create!(unposted_current_points: 80.3)
+          @enrollment.scores.create!(unposted_current_points: 70.6, grading_period: period)
+          current_points = @enrollment.unposted_current_points(grading_period_id: period.id)
+          expect(current_points).to eq 70.6
+        end
+
+        it 'returns nil if a grading period score is requested and does not exist' do
+          current_score = @enrollment.unposted_current_points(grading_period_id: period.id)
+          expect(current_score).to be_nil
+        end
+      end
+
       describe '#find_score' do
         before(:each) do
           @course.update!(grading_standard_enabled: true)
@@ -1331,7 +1402,7 @@ describe Enrollment do
 
   context "permissions" do
     it "should grant read rights to account members with the ability to read_roster" do
-      role = Role.get_built_in_role("AccountMembership")
+      role = Role.get_built_in_role("AccountMembership", root_account_id: Account.default.id)
       user = account_admin_user(:role => role)
       RoleOverride.create!(:context => Account.default, :permission => :read_roster,
                            :role => role, :enabled => true)
@@ -2442,7 +2513,7 @@ describe Enrollment do
     it "should return candidate enrollments" do
       user_factory
       @user.update_attribute(:workflow_state, 'creation_pending')
-      @user.communication_channels.create!(:path => 'jt@instructure.com')
+      communication_channel(@user, {username: 'jt@instructure.com'})
       @course.enroll_user(@user)
       expect(Enrollment.invited.for_email('jt@instructure.com').count).to eq 1
     end
@@ -2451,27 +2522,27 @@ describe Enrollment do
       # mismatched e-mail
       user_factory
       @user.update_attribute(:workflow_state, 'creation_pending')
-      @user.communication_channels.create!(:path => 'bob@instructure.com')
+      communication_channel(@user, {username: 'bob@instructure.com'})
       @course.enroll_user(@user)
       # registered user
       user_factory
-      @user.communication_channels.create!(:path => 'jt@instructure.com')
+      communication_channel(@user, {username: 'jt@instructure.com'})
       @user.register!
       @course.enroll_user(@user)
       # active e-mail
       user_factory
       @user.update_attribute(:workflow_state, 'creation_pending')
-      @user.communication_channels.create!(:path => 'jt@instructure.com') { |cc| cc.workflow_state = 'active' }
+      communication_channel(@user, {username: 'jt@instructure.com', active_cc: true})
       @course.enroll_user(@user)
       # accepted enrollment
       user_factory
       @user.update_attribute(:workflow_state, 'creation_pending')
-      @user.communication_channels.create!(:path => 'jt@instructure.com')
+      communication_channel(@user, {username: 'jt@instructure.com'})
       @course.enroll_user(@user).accept
       # rejected enrollment
       user_factory
       @user.update_attribute(:workflow_state, 'creation_pending')
-      @user.communication_channels.create!(:path => 'jt@instructure.com')
+      communication_channel(@user, {username: 'jt@instructure.com'})
       @course.enroll_user(@user).reject
 
       expect(Enrollment.invited.for_email('jt@instructure.com')).to eq []
@@ -2484,7 +2555,7 @@ describe Enrollment do
         course_factory(active_all: true)
         user_factory
         @user.update_attribute(:workflow_state, 'creation_pending')
-        @user.communication_channels.create!(:path => 'jt@instructure.com')
+        communication_channel(@user, {username: 'jt@instructure.com'})
         @enrollment = @course.enroll_user(@user)
         expect(Enrollment.cached_temporary_invitations('jt@instructure.com').length).to eq 1
         @enrollment.accept
@@ -2541,14 +2612,14 @@ describe Enrollment do
           course_factory(active_all: true)
           user_factory
           @user.update_attribute(:workflow_state, 'creation_pending')
-          @user.communication_channels.create!(:path => 'jt@instructure.com')
+          communication_channel(@user, {username: 'jt@instructure.com'})
           @enrollment1 = @course.enroll_user(@user)
           @shard1.activate do
             account = Account.create!
             course_factory(active_all: true, :account => account)
             user_factory
             @user.update_attribute(:workflow_state, 'creation_pending')
-            @user.communication_channels.create!(:path => 'jt@instructure.com')
+            communication_channel(@user, {username: 'jt@instructure.com'})
             @enrollment2 = @course.enroll_user(@user)
           end
         end

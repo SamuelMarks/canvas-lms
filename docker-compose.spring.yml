@@ -1,7 +1,7 @@
 # Append `:docker-compose.spring.yml` to COMPOSE_FILE in `.env`
 # invoke a console with `docker-compose run --rm web bin/rails console`
 # or with specs: `docker-compose run --rm web bin/rspec spec/path/to/file_spec.rb`
-version: '2'
+version: '2.3'
 services:
   web:
     environment:
@@ -34,7 +34,6 @@ services:
       - quizzes_node_modules:/usr/src/app/client_apps/canvas_quizzes/node_modules
       - quizzes_tmp:/usr/src/app/client_apps/canvas_quizzes/tmp
       - reports:/usr/src/app/reports
-      - selinimum_node_modules:/usr/src/app/gems/selinimum/node_modules
       - styleguide:/usr/src/app/app/views/info
       - tmp:/usr/src/app/tmp
       - translations:/usr/src/app/public/javascripts/translations

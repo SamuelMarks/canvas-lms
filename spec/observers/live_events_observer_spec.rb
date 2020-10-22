@@ -105,6 +105,26 @@ describe LiveEventsObserver do
     end
   end
 
+  describe "conversation" do
+    it "posts create events" do
+      expect(Canvas::LiveEvents).to receive(:conversation_created).once
+      sender = user_model
+      recipient = user_model
+      conversation(sender, recipient)
+    end
+  end
+
+
+  describe "conversation messsage" do
+    it "posts conversation message create events" do
+      expect(Canvas::LiveEvents).to receive(:conversation_message_created).once
+      user1 = user_model
+      user2 = user_model
+      convo = Conversation.initiate([user1, user2], false)
+      convo.add_message(user1, "create new conversation message")
+    end
+  end
+
   describe "course" do
     it "posts create events" do
       expect(Canvas::LiveEvents).to receive(:course_created).once
@@ -212,6 +232,31 @@ describe LiveEventsObserver do
     it "posts create events" do
       expect(Canvas::LiveEvents).to receive(:submission_created).once
       submission_model
+    end
+
+    it "does not post a create event when a submission is first created in an unsubmitted state" do
+      expect(Canvas::LiveEvents).to_not receive(:submission_created)
+      Submission.create!(assignment: assignment_model, user: user_model, workflow_state: 'unsubmitted', submitted_at: Time.zone.now)
+    end
+
+    it "posts a create event when a submission is first created in an submitted state" do
+      expect(Canvas::LiveEvents).to receive(:submission_created).once
+      Submission.create!(
+        assignment: assignment_model, user: user_model, workflow_state: 'submitted',
+        submitted_at: Time.zone.now, submission_type: 'online_url'
+      )
+    end
+
+    it "posts a submission_created event when a unsubmitted submission is submitted" do
+      s = unsubmitted_submission_model
+      expect(Canvas::LiveEvents).to receive(:submission_created).once
+      s.assignment.submit_homework(s.user, { url: "http://www.instructure.com/" })
+    end
+
+    it "posts a create event when a submitted submission is resubmitted" do
+      s = submission_model
+      expect(Canvas::LiveEvents).to receive(:submission_created).once
+      s.assignment.submit_homework(s.user, { url: "http://www.instructure.com/" })
     end
 
     it "posts update events" do
@@ -397,6 +442,24 @@ describe LiveEventsObserver do
         expect_any_instance_of(CourseProgress).to receive(:completed?).and_return(false)
         context_module_progression.update_attribute(:workflow_state, 'completed')
       end
+
+      it "should still post even when weird requirements_met unsetting happens" do
+        page = course.wiki_pages.create!(:title => "page")
+        tag = context_module.add_item(:id => page.id, :type => 'wiki_page')
+        context_module.completion_requirements = {tag.id => {:type => 'must_view'}}
+        context_module.save!
+
+        expect(Canvas::LiveEvents).to receive(:course_completed).with(anything)
+        ContextModuleProgression.transaction(requires_new: true) do
+          # complete it
+          context_module_progression.update(:workflow_state => 'completed',
+            :requirements_met => [{:id => tag.id, :type => 'must_view'}])
+          # sneakily remove the requiremets met because terribleness
+          context_module_progression.update(:requirements_met => [])
+        end
+        # event fires off now but it should ignore the missing requirements_met in the db and
+        # use the ones that were present when the completion happened
+      end
     end
 
     context "the tag_type is not context_module or context_module_progression" do
@@ -468,6 +531,40 @@ describe LiveEventsObserver do
       link = group.add_outcome(outcome)
       expect(Canvas::LiveEvents).to receive(:learning_outcome_link_updated).with(link)
       link.destroy!
+    end
+  end
+
+  describe "outcome_proficiency" do
+    it "posts create events" do
+      expect(Canvas::LiveEvents).to receive(:outcome_proficiency_created).once
+      outcome_proficiency_model(account_model)
+    end
+
+    it "posts updated events when ratings are changed" do
+      proficiency = outcome_proficiency_model(account_model)
+      expect(Canvas::LiveEvents).to receive(:outcome_proficiency_updated).once
+      rating = OutcomeProficiencyRating.new(description: 'new_rating', points: 5, mastery: true, color: 'ff0000')
+      proficiency.outcome_proficiency_ratings = [rating]
+      proficiency.save!
+    end
+
+    it "posts updated events when proficiencies are destroyed" do
+      proficiency = outcome_proficiency_model(account_model)
+      expect(Canvas::LiveEvents).to receive(:outcome_proficiency_updated).once
+      proficiency.destroy
+    end
+  end
+
+  describe "calculation_method" do
+    it "posts create events" do
+      expect(Canvas::LiveEvents).to receive(:outcome_calculation_method_created).once
+      outcome_calculation_method_model(account_model)
+    end
+
+    it "posts updated events" do
+      calculation_method = outcome_calculation_method_model(account_model)
+      expect(Canvas::LiveEvents).to receive(:outcome_calculation_method_updated).once
+      calculation_method.destroy
     end
   end
 end

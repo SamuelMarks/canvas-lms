@@ -75,12 +75,15 @@ describe AccountUser do
   describe "all_permissions_for" do
     it "should include granted permissions from multiple roles" do
       user = User.create!
+      manage_wiki_permissions = {:manage_wiki_create => true, :manage_wiki_update => true, :manage_wiki_delete => true}
       account_admin_user_with_role_changes(:user => user, :role => @role1, :role_changes => {:manage_sis => true})
-      account_admin_user_with_role_changes(:user => user, :role => @role2, :role_changes => {:manage_wiki => true})
+      account_admin_user_with_role_changes(:user => user, :role => @role2, :role_changes => manage_wiki_permissions)
 
       permissions = AccountUser.all_permissions_for(user, Account.default)
       expect(permissions.delete(:manage_sis)).not_to be_empty
-      expect(permissions.delete(:manage_wiki)).not_to be_empty
+      expect(permissions.delete(:manage_wiki_create)).not_to be_empty
+      expect(permissions.delete(:manage_wiki_update)).not_to be_empty
+      expect(permissions.delete(:manage_wiki_delete)).not_to be_empty
       expect(permissions.values.all?(&:empty?)).to be_truthy
     end
   end
@@ -180,6 +183,18 @@ describe AccountUser do
     it 'allows an invalid AccountUser to be deleted' do
       au = AccountUser.create(user: @user, account: @sub2, role: @sub1role, workflow_state: 'deleted')
       expect(au).to be_valid
+    end
+
+    describe 'root_account_id' do
+      it "uses root_account value from account" do
+        au = AccountUser.create(user: @user, account: @sub1a, role: @sub1role)
+        expect(au.root_account_id).to eq(@account.id)
+      end
+
+      it "keeps set value if it already exists" do
+        au = AccountUser.create(user: @user, account: @sub1a, role: @sub1role, root_account_id: @sub1.id)
+        expect(au.root_account_id).to eq(@sub1.id)
+      end
     end
   end
 end

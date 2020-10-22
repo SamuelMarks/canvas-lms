@@ -20,11 +20,14 @@ require_relative '../sharding_spec_helper'
 
 describe PlannerController do
   before :once do
+    Account.find_or_create_by!(id: 0).update(name: 'Dummy Root Account', workflow_state: 'deleted', root_account_id: nil)
     course_with_teacher(active_all: true)
     student_in_course(active_all: true)
     @group = @course.assignment_groups.create(:name => "some group")
     @assignment = course_assignment
     @assignment2 = course_assignment
+    @assignment.unmute!
+    @assignment2.unmute!
   end
 
   def course_assignment
@@ -46,7 +49,6 @@ describe PlannerController do
   context "as student" do
     before :each do
       user_session(@student)
-      @course.root_account.enable_feature!(:student_planner)
     end
 
     describe "GET #index" do
@@ -612,6 +614,7 @@ describe PlannerController do
           dt.change_all_read_state("unread", @student)
 
           @assignment3 = @course.assignments.create!(:submission_types => "online_text_entry")
+          @assignment3.unmute!
           override = @assignment3.assignment_overrides.new(:set => @course.default_section)
           override.override_due_at(2.days.from_now)
           override.save!
@@ -719,7 +722,7 @@ describe PlannerController do
       context "with user id" do
         it "allows a student to query her own planner items" do
           get :index, params: {user_id: 'self', per_page: 1}
-          expect(response).to be_success
+          expect(response).to be_successful
           link = Api.parse_pagination_links(response.headers['Link']).detect{|p| p[:rel] == "next"}
           expect(link[:uri].path).to include "/api/v1/users/self/planner/items"
         end
@@ -729,7 +732,7 @@ describe PlannerController do
           user_session(observer)
           UserObservationLink.create_or_restore(observer: observer, student: @student, root_account: Account.default)
           get :index, params: {user_id: @student.to_param, per_page: 1}
-          expect(response).to be_success
+          expect(response).to be_successful
           link = Api.parse_pagination_links(response.headers['Link']).detect{|p| p[:rel] == "next"}
           expect(link[:uri].path).to include "/api/v1/users/#{@student.to_param}/planner/items"
         end
@@ -977,7 +980,7 @@ describe PlannerController do
 
         it "should return items with new submission comments" do
           @sub = @assignment2.submit_homework(@student)
-          @sub.submission_comments.create!(comment: "hello", author: @teacher)
+          @sub.add_comment(comment: "hello", author: @teacher)
           get :index, params: {filter: "new_activity"}
           response_json = json_parse(response.body)
           expect(response_json.length).to eq 1
@@ -1140,6 +1143,21 @@ describe PlannerController do
             topic_json = json_parse(response.body).first
             expect(topic_json['plannable']['unread_count']).to be 1
           end
+        end
+      end
+
+      context "date ranges" do
+        let(:start_date) { Time.parse("2020-01-1T00:00:00") }
+        let(:end_date) { Time.parse("2020-01-1T23:59:59Z") }
+
+        it "only returns items between (inclusive) the specified dates" do
+          pn = planner_note_model(course: @course, todo_date: end_date)
+          calendar_event_model(start_at: end_date + 1.second)
+          get :index, params: {:start_date => start_date.iso8601, :end_date => end_date.iso8601}
+          response_json = json_parse(response.body)
+          expect(response_json.length).to eq 1
+          note = response_json.detect { |i| i["plannable_type"] == 'planner_note' }
+          expect(note["plannable"]["title"]).to eq pn.title
         end
       end
     end

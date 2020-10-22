@@ -482,6 +482,137 @@ describe SubmissionsController do
         expect(attachment.instfs_uuid).to eq uuid
       end
     end
+
+    describe "confetti celebrations" do
+      before(:each) do
+        Account.default.enable_feature!(:confetti_for_assignments)
+      end
+
+      context "submission is made before due date" do
+        before(:each) do
+          course_with_student_logged_in(:active_all => true)
+          @assignment = @course.assignments.create!(:title => "some assignment", :submission_types => "online_url,online_upload", :due_at => 5.days.from_now)
+        end
+
+        it "redirects with confetti" do
+          post 'create', params: {:course_id => @course.id, :assignment_id => @assignment.id, :submission => {:submission_type => "online_url", :url => "url"}}
+          expect(response).to be_redirect
+          expect(response).to redirect_to(/[\?&]confetti=true/)
+        end
+
+        context "confetti_for_assignments flag is disabled" do
+          before(:each) do
+            Account.default.disable_feature!(:confetti_for_assignments)
+          end
+
+          it "redirects without confetti" do
+            post 'create', params: {
+              :course_id => @course.id,
+              :assignment_id => @assignment.id,
+              :submission => {:submission_type => "online_url", :url => "url"}
+            }
+            expect(response).to be_redirect
+            expect(response).to_not redirect_to(/[\?&]confetti=true/)
+          end
+        end
+      end
+
+      context "submission is made after due date" do
+        before(:each) do
+          course_with_student_logged_in(:active_all => true)
+          @assignment = @course.assignments.create!(:title => "some assignment", :submission_types => "online_url,online_upload", :due_at => 5.days.ago)
+        end
+
+        it "redirects without confetti" do
+          post 'create', params: {:course_id => @course.id, :assignment_id => @assignment.id, :submission => {:submission_type => "online_url", :url => "url"}}
+          expect(response).to be_redirect
+          expect(response).to_not redirect_to(/[\?&]confetti=true/)
+        end
+      end
+
+      context "submission is made with no due date" do
+        before(:each) do
+          course_with_student_logged_in(:active_all => true)
+          @assignment = @course.assignments.create!(:title => "some assignment", :submission_types => "online_url,online_upload")
+        end
+
+        it "redirects with confetti" do
+          post 'create', params: {:course_id => @course.id, :assignment_id => @assignment.id, :submission => {:submission_type => "online_url", :url => "url"}}
+          expect(response).to be_redirect
+          expect(response).to redirect_to(/[\?&]confetti=true/)
+        end
+
+        context "confetti_for_assignments flag is disabled" do
+          before(:each) do
+            Account.default.disable_feature!(:confetti_for_assignments)
+          end
+
+          it "redirects without confetti" do
+            post 'create', params: {
+              :course_id => @course.id,
+              :assignment_id => @assignment.id,
+              :submission => {:submission_type => "online_url", :url => "url"}
+            }
+            expect(response).to be_redirect
+            expect(response).to_not redirect_to(/[\?&]confetti=true/)
+          end
+        end
+      end
+    end
+
+    describe "tardiness tracker" do
+      let(:course) { course_with_student_logged_in(active_all: true) && @course }
+
+      it "redirects with submitted=0 when assignment has no due date" do
+        assignment = course.assignments.create!(
+          title: "some assignment",
+          submission_types: "online_url"
+        )
+
+        post 'create', params: {
+          course_id: course.id,
+          assignment_id: assignment.id,
+          submission: { submission_type: "online_url", url: "url" }
+        }
+
+        expect(response).to be_redirect
+        expect(response).to redirect_to(/[\?&]submitted=0/)
+      end
+
+      it "redirects with submitted=1 when submission is made on time" do
+        assignment = course.assignments.create!(
+          title: "some assignment",
+          submission_types: "online_url",
+          due_at: 5.days.from_now
+        )
+
+        post 'create', params: {
+          course_id: course.id,
+          assignment_id: assignment.id,
+          submission: { submission_type: "online_url", url: "url" }
+        }
+
+        expect(response).to be_redirect
+        expect(response).to redirect_to(/[\?&]submitted=1/)
+      end
+
+      it "redirects with submitted=2 when submission is late" do
+        assignment = course.assignments.create!(
+          title: "some assignment",
+          submission_types: "online_url",
+          due_at: 1.days.ago
+        )
+
+        post 'create', params: {
+          course_id: course.id,
+          assignment_id: assignment.id,
+          submission: { submission_type: "online_url", url: "url" }
+        }
+
+        expect(response).to be_redirect
+        expect(response).to redirect_to(/[\?&]submitted=2/)
+      end
+    end
   end
 
   describe "GET zip" do
@@ -497,14 +628,13 @@ describe SubmissionsController do
       expect(a.user).to eq @teacher
       expect(a.workflow_state).to eq 'to_be_zipped'
       a.update_attribute('workflow_state', 'zipped')
-      allow(a).to receive('full_filename').and_return(File.expand_path(__FILE__)) # just need a valid file
-      allow(a).to receive('content_type').and_return('test/file')
-      allow(Attachment).to receive(:instantiate).and_return(a)
+      allow_any_instantiation_of(a).to receive('full_filename').and_return(File.expand_path(__FILE__)) # just need a valid file
+      allow_any_instantiation_of(a).to receive('content_type').and_return('test/file')
 
       request.headers['HTTP_ACCEPT'] = '*/*'
       get 'index', params: { :course_id => @course.id, :assignment_id => @assignment.id, :zip => '1' }
       expect(response).to be_successful
-      expect(response.content_type).to eq 'test/file'
+      expect(response.media_type).to eq 'test/file'
     end
   end
 
@@ -574,8 +704,8 @@ describe SubmissionsController do
       expect(submission.read?(@teacher)).to be_falsey
     end
 
-    it "renders json with scores for teachers on muted assignments" do
-      @assignment.update!(muted: true)
+    it "renders json with scores for teachers for unposted submissions" do
+      @assignment.ensure_post_policy(post_manually: true)
       request.accept = Mime[:json].to_s
       get :show, params: {course_id: @context.id, assignment_id: @assignment.id, id: @student.id}, format: :json
       expect(body['id']).to eq @submission.id
@@ -585,9 +715,9 @@ describe SubmissionsController do
       expect(body['published_score']).to eq 10
     end
 
-    it "renders json without scores for students on muted assignments" do
+    it "renders json without scores for students for unposted submissions" do
       user_session(@student)
-      @assignment.update!(muted: true)
+      @assignment.ensure_post_policy(post_manually: true)
       request.accept = Mime[:json].to_s
       get :show, params: {course_id: @context.id, assignment_id: @assignment.id, id: @student.id}, format: :json
       expect(body['id']).to eq @submission.id
@@ -597,12 +727,12 @@ describe SubmissionsController do
       expect(body['published_score']).to be nil
     end
 
-    it "renders json without scores for students on muted quizzes" do
+    it "renders json without scores for students with an unposted submission for a quiz" do
       quiz = @context.quizzes.create!
       quiz.workflow_state = "available"
       quiz.quiz_questions.create!({ question_data: test_quiz_data.first })
       quiz.save!
-      quiz.assignment.update!(muted: true)
+      quiz.assignment.ensure_post_policy(post_manually: true)
 
       quiz_submission = quiz.generate_submission(@student)
       Quizzes::SubmissionGrader.new(quiz_submission).grade_submission
@@ -616,7 +746,8 @@ describe SubmissionsController do
 
     it "renders the page for submitting student" do
       user_session(@student)
-      @assignment.update!(anonymous_grading: true, muted: true)
+      @assignment.update!(anonymous_grading: true)
+      @assignment.ensure_post_policy(post_manually: true)
       get :show, params: {course_id: @context.id, assignment_id: @assignment.id, id: @student.id}
       assert_status(200)
     end
@@ -691,28 +822,28 @@ describe SubmissionsController do
       new_student = User.create!
       @context.enroll_student(new_student, enrollment_state: 'active')
       user_session(new_student)
-      @assignment.update!(anonymous_grading: true, muted: true)
+      @assignment.update!(anonymous_grading: true)
       get :show, params: {course_id: @context.id, assignment_id: @assignment.id, id: @student.id}
       assert_unauthorized
     end
 
     it "renders unauthorized for teacher" do
       user_session(@teacher)
-      @assignment.update!(anonymous_grading: true, muted: true)
+      @assignment.update!(anonymous_grading: true)
       get :show, params: {course_id: @context.id, assignment_id: @assignment.id, id: @student.id}
       assert_unauthorized
     end
 
     it "renders unauthorized for admin" do
       user_session(account_admin_user)
-      @assignment.update!(anonymous_grading: true, muted: true)
+      @assignment.update!(anonymous_grading: true)
       get :show, params: {course_id: @context.id, assignment_id: @assignment.id, id: @student.id}
       assert_unauthorized
     end
 
     it "renders the page for site admin" do
       user_session(site_admin_user)
-      @assignment.update!(anonymous_grading: true, muted: true)
+      @assignment.update!(anonymous_grading: true)
       get :show, params: {course_id: @context.id, assignment_id: @assignment.id, id: @student.id}
       assert_status(200)
     end
@@ -742,6 +873,7 @@ describe SubmissionsController do
       @association = @rubric.associate_with @assignment, @context, :purpose => 'grading'
       @assignment.peer_reviews = true
       @assignment.save!
+      @assignment.unmute!
       @assignment.assign_peer_review(@assessor, @submission.user)
       @assessment = @association.assess(:assessor => @assessor, :user => @submission.user, :artifact => @submission, :assessment => { :assessment_type => 'grading'})
       user_session(@assessor)
@@ -1150,44 +1282,6 @@ describe SubmissionsController do
         get :audit_events, params: quiz_audit_params, format: :json
         expect(returned_quizzes).to include(hash_including({ "id" => quiz.id, "role" => "grader" }))
       end
-    end
-  end
-
-  describe "copy_attachments_to_submissions_folder" do
-    before(:once) do
-      course_with_student
-      @course.account.enable_service(:avatars)
-      attachment_model(context: @student)
-    end
-
-    it "copies a user attachment into the user's submissions folder" do
-      atts = SubmissionsController.copy_attachments_to_submissions_folder(@course, [@attachment])
-      expect(atts.length).to eq 1
-      expect(atts[0]).not_to eq @attachment
-      expect(atts[0].folder).to eq @student.submissions_folder(@course)
-    end
-
-    it "leaves files already in submissions folders alone" do
-      @attachment.folder = @student.submissions_folder(@course)
-      @attachment.save!
-      atts = SubmissionsController.copy_attachments_to_submissions_folder(@course, [@attachment])
-      expect(atts).to eq [@attachment]
-    end
-
-    it "copies a group attachment into the group submission folder" do
-      group_model(context: @course)
-      attachment_model(context: @group)
-      atts = SubmissionsController.copy_attachments_to_submissions_folder(@course, [@attachment])
-      expect(atts.length).to eq 1
-      expect(atts[0]).not_to eq @attachment
-      expect(atts[0].folder).to eq @group.submissions_folder
-    end
-
-    it "leaves files in non user/group context alone" do
-      assignment_model(context: @course)
-      weird_file = @assignment.attachments.create! display_name: 'blah', uploaded_data: default_uploaded_data
-      atts = SubmissionsController.copy_attachments_to_submissions_folder(@course, [weird_file])
-      expect(atts).to eq [weird_file]
     end
   end
 end

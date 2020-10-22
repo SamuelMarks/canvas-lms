@@ -50,6 +50,7 @@ RSpec.describe GradebookSettingsController, type: :controller do
           "sort_rows_by_column_id" => "student",
           "sort_rows_by_setting_key" => "sortable_name",
           "sort_rows_by_direction" => "descending",
+          "view_ungraded_as_zero" => "true",
           "colors" => {
             "late" => "#000000",
             "missing" => "#000001",
@@ -79,7 +80,7 @@ RSpec.describe GradebookSettingsController, type: :controller do
       end
 
       context 'given a valid PUT request' do
-        subject { json_parse.fetch('gradebook_settings').fetch(@course.id.to_s) }
+        subject { json_parse.fetch('gradebook_settings').fetch(@course.global_id.to_s) }
 
         before { put :update, params: valid_params }
 
@@ -96,8 +97,9 @@ RSpec.describe GradebookSettingsController, type: :controller do
         it { is_expected.to include 'sort_rows_by_column_id' => 'student' }
         it { is_expected.to include 'sort_rows_by_setting_key' => 'sortable_name' }
         it { is_expected.to include 'sort_rows_by_direction' => 'descending' }
+        it { is_expected.to include 'view_ungraded_as_zero' => 'true' }
         it { is_expected.not_to include 'colors' }
-        it { is_expected.to have(12).items } # ensure we add specs for new additions
+        it { is_expected.to have(13).items } # ensure we add specs for new additions
 
         context 'colors' do
           subject { json_parse.fetch('gradebook_settings').fetch('colors') }
@@ -118,9 +120,7 @@ RSpec.describe GradebookSettingsController, type: :controller do
       it "transforms 'null' string values to nil" do
         put :update, params: valid_params
 
-        section_id = teacher.preferences.
-          fetch(:gradebook_settings).
-          fetch(@course.id).
+        section_id = teacher.get_preference(:gradebook_settings, @course.global_id).
           fetch('filter_rows_by').
           fetch('section_id')
 

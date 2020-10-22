@@ -26,16 +26,17 @@ import {RUBRIC_QUERY} from '../../graphqlData/Queries'
 async function makeMocks() {
   const variables = {
     courseID: '1',
-    rubricID: '1',
+    assignmentLid: '1',
     submissionID: '1',
     submissionAttempt: 0
   }
 
   const overrides = {
-    Node: {__typename: 'Rubric'},
+    Node: {__typename: 'Assignment'},
+    Assignment: {rubric: {}},
     Rubric: {criteria: [{}]},
     Submission: {rubricAssessmentsConnection: null},
-    Account: {proficiencyRatingsConnection: null}
+    Account: {outcomeProficiency: {proficiencyRatingsConnection: null}}
   }
 
   const result = await mockQuery(RUBRIC_QUERY, overrides, variables)

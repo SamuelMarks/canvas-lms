@@ -17,13 +17,15 @@
 
 import React from 'react'
 import ReactDOM from 'react-dom'
-import {Spinner} from '@instructure/ui-elements'
+import {Spinner} from '@instructure/ui-spinner'
 import $ from 'jquery'
 import _ from 'underscore'
 import Backbone from 'Backbone'
-import splitAssetString from '../str/splitAssetString'
-import Depaginate from 'jsx/shared/CheatDepaginator'
+
 import I18n from 'i18n!calendar.edit'
+
+import NaiveRequestDispatch from 'jsx/shared/network/NaiveRequestDispatch'
+import splitAssetString from '../str/splitAssetString'
 
 export default class CalendarEvent extends Backbone.Model {
   urlRoot = '/api/v1/calendar_events/'
@@ -41,7 +43,8 @@ export default class CalendarEvent extends Backbone.Model {
       'location_name',
       'location_address',
       'duplicate',
-      'comments'
+      'comments',
+      'web_conference'
     )
     if (obj.use_section_dates && obj.child_event_data) {
       filtered.child_event_data = _.chain(obj.child_event_data)
@@ -68,19 +71,22 @@ export default class CalendarEvent extends Backbone.Model {
     return result
   }
 
-  fetch(otps = {}) {
+  fetch(opts = {}) {
     let sectionsDfd, syncDfd
 
     this.showSpinner()
 
-    const {success, error, ...options} = otps
+    const {success, error, ...options} = opts
+
+    options.url = this.url() + '?include[]=web_conference'
 
     if (this.get('id')) {
       syncDfd = (this.sync || Backbone.sync).call(this, 'read', this, options)
     }
 
     if (this.get('sections_url')) {
-      sectionsDfd = Depaginate(this.get('sections_url'))
+      const dispatch = new NaiveRequestDispatch()
+      sectionsDfd = dispatch.getDepaginated(this.get('sections_url'))
     }
 
     const combinedSuccess = (syncArgs = [], sectionsResp = []) => {
@@ -123,7 +129,7 @@ export default class CalendarEvent extends Backbone.Model {
   }
 
   static mergeSectionsIntoCalendarEvent(eventData = {}, sections) {
-    eventData.recurring_calendar_events = ENV.RECURRING_CALENDAR_EVENTS_ENABLED
+    eventData.include_conference_selection = ENV.CALENDAR?.CONFERENCES_ENABLED
     eventData.course_sections = sections
     eventData.use_section_dates = !!(eventData.child_events && eventData.child_events.length)
     _(eventData.child_events).each((child, index) => {

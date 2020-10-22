@@ -23,7 +23,7 @@ import I18n from 'i18n!assignments_2'
 import React from 'react'
 import {ScreenReaderContent} from '@instructure/ui-a11y'
 import {SubmissionComment} from '../../graphqlData/SubmissionComment'
-import {VideoPlayer} from '@instructure/ui-media-player'
+import {MediaPlayer} from '@instructure/ui-media-player'
 
 export default function CommentRow(props) {
   const {author, mediaObject, read} = props.comment
@@ -54,6 +54,7 @@ export default function CommentRow(props) {
           name={author ? author.shortName : I18n.t('Anonymous')}
           src={author ? author.avatarUrl : ''}
           margin="0 small 0 0"
+          data-fs-exclude
         />
       </div>
       <div className="comment-text-comment-container">
@@ -80,7 +81,7 @@ export default function CommentRow(props) {
             {attachment.displayName}
           </Button>
         ))}
-        {mediaObject && <VideoPlayer tracks={mediaTracks} sources={mediaObject.mediaSources} />}
+        {mediaObject && <MediaPlayer tracks={mediaTracks} sources={mediaObject.mediaSources} />}
       </div>
     </div>
   )
@@ -89,4 +90,3 @@ export default function CommentRow(props) {
 CommentRow.propTypes = {
   comment: SubmissionComment.shape.isRequired
 }
-

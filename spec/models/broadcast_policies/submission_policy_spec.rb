@@ -208,8 +208,6 @@ module BroadcastPolicies
 
       before(:once) do
         course.enroll_student(student)
-        course.enable_feature!(:new_gradebook)
-        PostPolicy.enable_feature!
       end
 
       before(:each) do
@@ -228,13 +226,6 @@ module BroadcastPolicies
         submission.update!(posted_at: Time.zone.now)
         submission.grade_posting_in_progress = true
         expect(policy.should_dispatch_submission_posted?).to be true
-      end
-
-      it "returns false when Post Policies are not enabled" do
-        course.disable_feature!(:new_gradebook)
-        submission.update!(posted_at: Time.zone.now)
-        submission.grade_posting_in_progress = true
-        expect(policy.should_dispatch_submission_posted?).to be false
       end
 
       it "returns false when the submission was posted longer than an hour ago" do

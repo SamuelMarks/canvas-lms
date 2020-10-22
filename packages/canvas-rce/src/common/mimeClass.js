@@ -18,12 +18,11 @@
 
 export function fileEmbed(file) {
   const fileMimeClass = mimeClass(file)
-  const fileMediaEntryId = mediaEntryId(file)
 
   if (fileMimeClass === 'image') {
     return {type: 'image'}
   } else if (fileMimeClass === 'video' || fileMimeClass === 'audio') {
-    return {type: fileMimeClass, id: fileMediaEntryId}
+    return {type: fileMimeClass}
   } else if (file.preview_url) {
     return {type: 'scribd'}
   } else {
@@ -31,16 +30,12 @@ export function fileEmbed(file) {
   }
 }
 
-function mediaEntryId(file) {
-  return file.media_entry_id || 'maybe'
-}
-
 export function mimeClass(file) {
   if (file.mime_class) {
     return file.mime_class
   } else {
     const contentType = getContentType(file)
-
+    // NOTE: Keep this list in sync with what's in canvas-lms/app/models/attachment.rb
     return (
       {
         'text/html': 'html',
@@ -65,6 +60,9 @@ export function mimeClass(file) {
         'image/pjpeg': 'image',
         'image/png': 'image',
         'image/gif': 'image',
+        'image/bmp': 'image',
+        'image/svg+xml': 'image',
+        // 'image/webp': 'image', not supported by safari as of Version 13.1.1
         'application/x-rar': 'zip',
         'application/x-rar-compressed': 'zip',
         'application/x-zip': 'zip',
@@ -81,6 +79,8 @@ export function mimeClass(file) {
         'audio/x-mpegurl': 'audio',
         'audio/x-pn-realaudio': 'audio',
         'audio/x-wav': 'audio',
+        'audio/mp4': 'audio',
+        'audio/webm': 'audio',
         'video/mpeg': 'video',
         'video/quicktime': 'video',
         'video/x-la-asf': 'video',
@@ -90,6 +90,7 @@ export function mimeClass(file) {
         'video/3gpp': 'video',
         'video/mp4': 'video',
         'video/webm': 'video',
+        'video/avi': 'video',
         'application/x-shockwave-flash': 'flash'
       }[contentType] ||
       file.mime_class ||

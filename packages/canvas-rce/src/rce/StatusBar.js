@@ -17,29 +17,42 @@
  */
 
 import React, {useRef, useState} from 'react'
+import ReactDOM from 'react-dom'
 import {arrayOf, bool, func, number, string} from 'prop-types'
 import {StyleSheet, css} from 'aphrodite'
 import keycode from 'keycode'
 import {Button} from '@instructure/ui-buttons'
 import {Flex, View} from '@instructure/ui-layout'
-import {findFocusable, ScreenReaderContent} from '@instructure/ui-a11y'
+import {ScreenReaderContent} from '@instructure/ui-a11y'
 
 import {Text} from '@instructure/ui-elements'
 import {SVGIcon} from '@instructure/ui-svg-images'
-import {IconA11yLine, IconKeyboardShortcutsLine, IconMiniArrowEndLine} from '@instructure/ui-icons'
+import {
+  IconA11yLine,
+  IconKeyboardShortcutsLine,
+  IconMiniArrowEndLine,
+  IconFullScreenLine
+} from '@instructure/ui-icons'
 import formatMessage from '../format-message'
 import ResizeHandle from './ResizeHandle'
 
+// I don't know why eslint is reporting this, the props are all used
+/* eslint-disable react/no-unused-prop-types */
 StatusBar.propTypes = {
-  onToggleHtml: func,
+  onToggleHtml: func.isRequired,
   path: arrayOf(string),
   wordCount: number,
   isHtmlView: bool,
   onResize: func, // react-draggable onDrag handler.
   onKBShortcutModalOpen: func.isRequired,
-  onA11yChecker: func
+  onA11yChecker: func.isRequired,
+  onFullscreen: func.isRequired
 }
 
+/* eslint-enable react/no-unused-prop-types */
+
+// we use the array index because pathname may not be unique
+/* eslint-disable react/no-array-index-key */
 function renderPathString({path}) {
   return path.reduce((result, pathName, index) => {
     return result.concat(
@@ -52,6 +65,7 @@ function renderPathString({path}) {
     )
   }, [])
 }
+/* eslint-enable react/no-array-index-key */
 
 function emptyTagIcon() {
   return (
@@ -65,7 +79,16 @@ function emptyTagIcon() {
   )
 }
 
+function findFocusable(el) {
+  // eslint-disable-next-line react/no-find-dom-node
+  const element = ReactDOM.findDOMNode(el)
+  return element ? Array.from(element.querySelectorAll('[tabindex]')) : []
+}
+
 export default function StatusBar(props) {
+  const [focusedIndex, setFocusedIndex] = useState(0)
+  const statusBarRef = useRef(null)
+
   function handleKey(event) {
     const buttons = findFocusable(statusBarRef.current)
     if (event.keyCode === keycode.codes.right) {
@@ -76,19 +99,22 @@ export default function StatusBar(props) {
   }
 
   function handleFocus(event) {
+    // we hide a the 2 icon buttons
+    let offset = props.isHtmlView ? 2 : 0
     const buttons = findFocusable(statusBarRef.current)
     const fidx = buttons.findIndex(b => b === event.target)
-    setFocusedIndex(fidx)
+    if (props.isHtmlView && fidx === 4) {
+      // we hide the fullscreen button
+      --offset
+    }
+    setFocusedIndex(fidx + offset)
   }
 
   function tabIndexForPosition(itemIndex) {
-    return focusedIndex === itemIndex ? '0' : '-1'
+    const tabindex = focusedIndex === itemIndex ? '0' : '-1'
+    return tabindex
   }
 
-  const [focusedIndex, setFocusedIndex] = useState(0)
-  const statusBarRef = useRef(null)
-
-  /* eslint-disable react/prop-types */
   function renderPath() {
     if (props.isHtmlView) return null
     return <View data-testid="whole-status-bar-path">{renderPathString(props)}</View>
@@ -105,7 +131,10 @@ export default function StatusBar(props) {
           icon={IconKeyboardShortcutsLine}
           title={kbshortcut}
           tabIndex={tabIndexForPosition(0)}
-          onClick={props.onKBShortcutModalOpen}
+          onClick={event => {
+            event.target.focus() // FF doesn't focus buttons on click
+            props.onKBShortcutModalOpen()
+          }}
         >
           <ScreenReaderContent>{kbshortcut}</ScreenReaderContent>
         </Button>
@@ -114,7 +143,10 @@ export default function StatusBar(props) {
           icon={IconA11yLine}
           title={a11y}
           tabIndex={tabIndexForPosition(1)}
-          onClick={props.onA11yChecker}
+          onClick={event => {
+            event.target.focus()
+            props.onA11yChecker()
+          }}
         >
           <ScreenReaderContent>{a11y}</ScreenReaderContent>
         </Button>
@@ -148,7 +180,10 @@ export default function StatusBar(props) {
         <Button
           variant="link"
           icon={emptyTagIcon()}
-          onClick={props.onToggleHtml}
+          onClick={event => {
+            event.target.focus()
+            props.onToggleHtml()
+          }}
           title={toggleText}
           tabIndex={tabIndexForPosition(2)}
         >
@@ -158,10 +193,28 @@ export default function StatusBar(props) {
     )
   }
 
-  function renderResizeHandle() {
-    return <ResizeHandle onDrag={props.onResize} tabIndex={tabIndexForPosition(3)} />
+  function renderFullscreen() {
+    if (props.isHtmlView) return null
+    const fullscreen = formatMessage('Fullscreen')
+    return (
+      <Button
+        variant="link"
+        icon={IconFullScreenLine}
+        title={fullscreen}
+        tabIndex={tabIndexForPosition(3)}
+        onClick={event => {
+          event.target.focus()
+          props.onFullscreen()
+        }}
+      >
+        <ScreenReaderContent>{fullscreen}</ScreenReaderContent>
+      </Button>
+    )
   }
-  /* eslint-enable react/prop-types */
+
+  function renderResizeHandle() {
+    return <ResizeHandle onDrag={props.onResize} tabIndex={tabIndexForPosition(4)} />
+  }
 
   const flexJustify = props.isHtmlView ? 'end' : 'start'
   return (
@@ -172,7 +225,6 @@ export default function StatusBar(props) {
       ref={statusBarRef}
       onKeyDown={handleKey}
       onFocus={handleFocus}
-      role="status"
     >
       <Flex.Item grow>{renderPath()}</Flex.Item>
 
@@ -182,6 +234,7 @@ export default function StatusBar(props) {
         {renderWordCount()}
         <div className={css(styles.separator)} />
         {renderToggleHtml()}
+        {renderFullscreen()}
         {renderResizeHandle()}
       </Flex.Item>
     </Flex>

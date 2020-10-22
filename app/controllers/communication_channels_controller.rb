@@ -164,8 +164,11 @@ class CommunicationChannelsController < ApplicationController
         return render :json => { errors: { type: 'SNS is not configured for this developer key'}}, status: :bad_request
       end
 
-      endpoint = @current_user.notification_endpoints.where("lower(token) = ?", params[:communication_channel][:token].downcase).first
-      endpoint ||= @access_token.notification_endpoints.create!(token: params[:communication_channel][:token])
+      NotificationEndpoint.unique_constraint_retry do
+        unless @access_token.notification_endpoints.where("lower(token) = lower(?)", params[:communication_channel][:token]).exists?
+          @access_token.notification_endpoints.create!(token: params[:communication_channel][:token])
+        end
+      end
 
       skip_confirmation = true
       params[:build_pseudonym] = nil
@@ -188,6 +191,7 @@ class CommunicationChannelsController < ApplicationController
     # Find or create the communication channel.
     @cc ||= @user.communication_channels.by_path(params[:communication_channel][:address]).
       where(path_type: params[:communication_channel][:type]).first
+    @cc.path = params[:communication_channel][:address] if @cc
     @cc ||= @user.communication_channels.build(:path => params[:communication_channel][:address],
       :path_type => params[:communication_channel][:type])
 
@@ -197,9 +201,9 @@ class CommunicationChannelsController < ApplicationController
     end
 
     @cc.user = @user
+    @cc.build_pseudonym_on_confirm = value_to_boolean(params[:build_pseudonym])
     @cc.re_activate! if @cc.retired?
     @cc.workflow_state = skip_confirmation ? 'active' : 'unconfirmed'
-    @cc.build_pseudonym_on_confirm = value_to_boolean(params[:build_pseudonym])
 
     # Save channel and return response
     if @cc.save
@@ -259,7 +263,7 @@ class CommunicationChannelsController < ApplicationController
         @user.touch
         flash[:notice] = t 'notices.registration_confirmed', "Registration confirmed!"
         return respond_to do |format|
-          format.html { redirect_back_or_default(user_profile_url(@current_user)) }
+          format.html { redirect_to redirect_back_or_default(user_profile_url(@current_user)) }
           format.json { render :json => cc.as_json(:except => [:confirmation_code] ) }
         end
       end
@@ -472,7 +476,7 @@ class CommunicationChannelsController < ApplicationController
     flash[:notice] = t 'notices.registration_confirmed', "Registration confirmed!"
     @current_user ||= @user # since dashboard_url may need it
     respond_to do |format|
-      format.html { @enrollment ? redirect_to(course_url(@course)) : redirect_back_or_default(dashboard_url) }
+      format.html { redirect_to(@enrollment ? course_url(@course) : redirect_back_or_default(dashboard_url)) }
       format.json { render :json => {:url => @enrollment ? course_url(@course) : dashboard_url} }
     end
   end
@@ -526,7 +530,7 @@ class CommunicationChannelsController < ApplicationController
     @cc = @current_user.communication_channels.unretired.of_type(CommunicationChannel::TYPE_PUSH).take
     raise ActiveRecord::RecordNotFound unless @cc
 
-    endpoints = @current_user.notification_endpoints.where("lower(token) = ?", params[:push_token].downcase)
+    endpoints = @current_user.notification_endpoints.shard(@current_user).where("lower(token) = ?", params[:push_token].downcase)
     if endpoints&.destroy_all
       @current_user.touch
       return render json: {success: true}
@@ -537,25 +541,25 @@ class CommunicationChannelsController < ApplicationController
 
   def bouncing_channel_report
     generate_bulk_report do
-      CommunicationChannel::BulkActions::ResetBounceCounts.new(bulk_action_args)
+      CommunicationChannel::BulkActions::ResetBounceCounts.new(**bulk_action_args)
     end
   end
 
   def bulk_reset_bounce_counts
     perform_bulk_action do
-      CommunicationChannel::BulkActions::ResetBounceCounts.new(bulk_action_args)
+      CommunicationChannel::BulkActions::ResetBounceCounts.new(**bulk_action_args)
     end
   end
 
   def unconfirmed_channel_report
     generate_bulk_report do
-      CommunicationChannel::BulkActions::Confirm.new(bulk_action_args)
+      CommunicationChannel::BulkActions::Confirm.new(**bulk_action_args)
     end
   end
 
   def bulk_confirm
     perform_bulk_action do
-      CommunicationChannel::BulkActions::Confirm.new(bulk_action_args)
+      CommunicationChannel::BulkActions::Confirm.new(**bulk_action_args)
     end
   end
 

@@ -581,7 +581,7 @@ describe AssignmentsApiController, type: :request do
           }
         )
 
-        expect(response).not_to be_success
+        expect(response).not_to be_successful
         json = JSON.parse response.body
         expect(json["errors"]["bucket"].first["message"]).to eq "bucket name must be one of the following: past, overdue, undated, ungraded, unsubmitted, upcoming, future"
       end
@@ -970,6 +970,274 @@ describe AssignmentsApiController, type: :request do
           json = api_get_assignments_index_from_course(@course)
           expect(json.length).to eq 1
           expect(json.first["id"]).to eq @assignment.id
+        end
+      end
+    end
+
+    describe "score statistics" do
+      def setup_course
+        @course_section = @course.course_sections.create
+        @section = @course.course_sections.create!(name: "test section")
+        @students = create_users_in_course(@course, 10, return_type: :record)
+        @students.each do |student|
+          student_in_section(@section, user: student)
+        end
+      end
+
+      def setup_graded_submissions(count=5)
+        @assignment = @course.assignments.create!(title: "title", points_possible: '20.0')
+
+        # Generate an array with min=10, max=18, mean=14
+        scores = [10] + [14] * (count - 2) + [18]
+
+        @students.take(count).each do |student|
+          score = scores.pop().to_s
+          @assignment.grade_student student, grade: score, grader: @teacher
+        end
+
+        ScoreStatisticsGenerator.update_score_statistics(@course.id)
+      end
+
+      context "as a student" do
+        before :each do
+          setup_course
+        end
+
+        it "should show min, max, and mean when include flag set" do
+          setup_graded_submissions
+          user_session @students[0]
+          @user = @students[0]
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['score_statistics', 'submission']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to eq({'min' => 10, 'max' => 18, 'mean' => 14})
+        end
+
+        it "should not show score statistics when include flag not set" do
+          setup_graded_submissions
+          user_session @students[0]
+          @user = @students[0]
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['submission']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to be_nil
+        end
+
+        it "should not show statistics when there are less than 5 graded submissions" do
+          setup_graded_submissions 4
+          user_session @students[0]
+          @user = @students[0]
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['score_statistics', 'submission']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to be_nil
+        end
+
+        it "should not show statistics when the student's submission is not graded" do
+          setup_graded_submissions
+
+          # The sixth student will not have a graded assignment
+          ungraded_student = @students[5]
+
+          user_session ungraded_student
+          @user = ungraded_student
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['score_statistics', 'submission']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to be_nil
+        end
+      end
+
+      context "in a course which has distributions disabled" do
+        before :once do
+          setup_course
+          @course.update(hide_distribution_graphs: true)
+        end
+        it "should not show score statistics to a student" do
+          setup_graded_submissions
+          user_session @students[0]
+          @user = @students[0]
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['score_statistics', 'submission']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to be_nil
+        end
+
+        it "should should not show score statistics to observers" do
+          setup_graded_submissions
+
+          @observer = User.create!
+          observer_enrollment = @course.enroll_user(@observer, 'ObserverEnrollment', :enrollment_state => 'active')
+          observer_enrollment.update_attribute(:associated_user_id, @students[0].id)
+          @user = @observer
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['score_statistics', 'submission', 'observed_users']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to be_nil
+        end
+      end
+
+      context "as an observer" do
+        before :once do
+          @observers = create_users(10, return_type: :record)
+          @observer_enrollments = create_enrollments(@course, @observers, enrollment_type: 'ObserverEnrollment', return_type: :record)
+        end
+        before :each do
+          @observer = @observers.pop
+          @observer_enrollment = @observer_enrollments.pop
+          setup_course
+        end
+
+        it "should should show score statistics when include flag is set" do
+          setup_graded_submissions
+
+          @observer_enrollment.update_attribute(:associated_user_id, @students[0].id)
+          @user = @observer
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['score_statistics', 'submission', 'observed_users']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to eq({'min' => 10, 'max' => 18, 'mean' => 14})
+        end
+
+        it "should should not show score statistics when no observed student has a grade" do
+          setup_graded_submissions
+
+          @observer_enrollment.update_attribute(:associated_user_id, @students[5].id)
+          @user = @observer
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['score_statistics', 'submission', 'observed_users']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to be_nil
+        end
+
+        it "should should show score statistics when any observed student has a grade" do
+          setup_graded_submissions
+
+          @observer_enrollment.update_attribute(:associated_user_id, @students[5].id)
+
+          Course.enroll_user_call_count -= 2 # Total hack but can't eleminate any of the enroll_user calls -- we need them to test multiple enrollments
+
+          observer_enrollment2 = @course.enroll_user(@observer, 'ObserverEnrollment', :enrollment_state => 'active', :allow_multiple_enrollments => true)
+          observer_enrollment2.update_attribute(:associated_user_id, @students[3].id)
+          observer_enrollment3 = @course.enroll_user(@observer, 'ObserverEnrollment', :enrollment_state => 'active', :allow_multiple_enrollments => true)
+          observer_enrollment3.update_attribute(:associated_user_id, @students[7].id)
+
+          @user = @observer
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['score_statistics', 'submission', 'observed_users']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to eq({'min' => 10, 'max' => 18, 'mean' => 14})
+        end
+
+        it "should should not show score statistics when less than 5 students have a graded assignment" do
+          setup_graded_submissions 4
+
+          @observer_enrollment.update_attribute(:associated_user_id, @students[0].id)
+          @user = @observer
+
+          json = api_call(
+            :get,
+            "/api/v1/courses/#{@course.id}/assignments",
+            {
+              :controller => 'assignments_api',
+              :action => 'index',
+              :format => 'json',
+              :course_id => @course.id.to_s
+            },
+            :include => ['score_statistics', 'submission', 'observed_users']
+          )
+          assign = json.first
+          expect(assign['score_statistics']).to be_nil
         end
       end
     end
@@ -2409,7 +2677,7 @@ describe AssignmentsApiController, type: :request do
           }
         })
 
-      expect(response).not_to be_success
+      expect(response).not_to be_successful
       json = JSON.parse response.body
       expect(json['errors']['assignment[assignment_group_id]'].first['message']).
         to eq "must be a positive number"
@@ -2763,7 +3031,7 @@ describe AssignmentsApiController, type: :request do
         },
         { :assignment => { :published => false } }
       )
-      expect(response).not_to be_success
+      expect(response).not_to be_successful
       json = JSON.parse response.body
       expect(json['errors']['published'].first['message']).
         to eq "Can't unpublish if there are student submissions"
@@ -2800,7 +3068,7 @@ describe AssignmentsApiController, type: :request do
       @assignment.save!
       raw_api_update_assignment(@course, @assignment,
                                 {'peer_reviews_assign_at' => '1/1/2013' })
-      expect(response).not_to be_success
+      expect(response).not_to be_successful
       expect(response.code).to eql '400'
       json = JSON.parse response.body
       expect(json['errors']['assignment[peer_reviews_assign_at]'].first['message']).
@@ -2831,6 +3099,23 @@ describe AssignmentsApiController, type: :request do
       expect(@assignment.lock_at).to be_nil
       expect(@assignment.unlock_at).to be_nil
       expect(@assignment.peer_reviews_assign_at).to be_nil
+    end
+
+    it "should unset submission types if set to not_graded" do
+      # the same way it would in the UI
+      @assignment = @course.assignments.create!(
+        :name => "some assignment",
+        :points_possible => 15,
+        :submission_types => "online_text_entry",
+        :grading_type => "percent"
+      )
+
+      api_update_assignment_call(@course, @assignment, {'grading_type' => 'not_graded'})
+      expect(response).to be_successful
+      @assignment.reload
+
+      expect(@assignment.grading_type).to eq 'not_graded'
+      expect(@assignment.submission_types).to eq 'not_graded'
     end
 
     describe 'final_grader_id' do
@@ -3476,6 +3761,7 @@ describe AssignmentsApiController, type: :request do
         @student.email_channel.notification_policies.create!(notification: @notification,
                                                              frequency: 'immediately')
         @assignment = @course.assignments.create!
+        @assignment.unmute!
         Assignment.where(:id => @assignment).update_all(:created_at => Time.zone.now - 1.day)
         @adhoc_due_at = 5.days.from_now
         @section_due_at = 7.days.from_now
@@ -4577,7 +4863,8 @@ describe AssignmentsApiController, type: :request do
           expect(@json['external_tool_tag_attributes']).to eq({
             'url' => 'http://www.example.com',
             'new_tab' => false,
-            'resource_link_id' => ContextExternalTool.opaque_identifier_for(@tool_tag, @tool_tag.context.shard)
+            'resource_link_id' => ContextExternalTool.opaque_identifier_for(@tool_tag, @tool_tag.context.shard),
+            'external_data' => nil
           })
         end
 
@@ -4785,26 +5072,126 @@ describe AssignmentsApiController, type: :request do
       expect(result['anonymous_grading']).to be false
     end
 
-    it 'is false for anonymize_students when the assignment is not anonymous' do
+    it "contains true for anonymous_grading when the assignment has anonymous grading enabled" do
+      @assignment.anonymous_grading = true
+      expect(result['anonymous_grading']).to be true
+    end
+
+    it "contains true for anonymize_students when the assignment is anonymized for students" do
+      @assignment.update!(anonymous_grading: true)
+      @assignment.ensure_post_policy(post_manually: true)
+      student_in_course(course: @course, active_all: true)
+      @assignment.grade_student(@student, grader: @teacher, score: 5)
+      expect(result['anonymous_grading']).to be true
+    end
+
+    it "contains false for anonymize_students when the assignment is not anonymized for students" do
+      @assignment.anonymous_grading = false
       expect(result['anonymize_students']).to be false
     end
 
-    context 'when the assignment is anonymous' do
-      before(:once) do
-        @assignment.anonymous_grading = true
+    context 'can_submit value' do
+      before :each do
+        course_with_student_logged_in(:course_name => "Course 1", :active_all => 1)
+        @course.start_at = 14.days.ago
+        @course.save!
+        @assignment = @course.assignments.create!(:title => "Assignment 1",
+                                                  :points_possible => 10,
+                                                  :submission_types => "online_text_entry")
       end
 
-      it 'contains true for anonymous_grading' do
-        expect(result['anonymous_grading']).to be true
+      def get_assignment
+        api_call(:get,
+                 "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}?include[]=can_submit",
+                 {:controller => "assignments_api",
+                  :action => "show",
+                  :format => "json",
+                  :course_id => @course.id.to_s,
+                  :id => @assignment.id,
+                  :include => ["can_submit"]})
       end
 
-      it 'is true for anonymize_students when the assignment is muted' do
-        @assignment.muted = true
-        expect(result['anonymize_students']).to be true
+      it 'is true for assignment' do
+        @course.conclude_at = 7.days.from_now
+        @course.save!
+        json = get_assignment
+        expect(json.key?('can_submit')).to be_present
+        expect(json['can_submit']).to be_truthy
       end
 
-      it 'is false for anonymize_students when the assignment is unmuted' do
-        expect(result['anonymize_students']).to be false
+      it 'is true for assignment in course that is soft-concluded but not restricted' do
+        @course.conclude_at = 3.days.ago
+        @course.restrict_enrollments_to_course_dates = false
+        @course.save!
+        json = get_assignment
+        expect(json.key?('can_submit')).to be_present
+        expect(json['can_submit']).to be_truthy
+      end
+
+      it 'is false for assignment in course that is soft-concluded and restricted' do
+        @course.conclude_at = 3.days.ago
+        @course.restrict_enrollments_to_course_dates = true
+        @course.save!
+        json = get_assignment
+        expect(json.key?('can_submit')).to be_present
+        expect(json['can_submit']).to be_falsey
+      end
+
+      it 'is false if the assignment has no submission types' do
+        @assignment.submission_types = "none"
+        @assignment.save!
+        json = get_assignment
+        expect(json.key?('can_submit')).to be_present
+        expect(json['can_submit']).to be_falsey
+      end
+
+      it 'is false if the assignment is submitted on paper' do
+        @assignment.submission_types = "on_paper"
+        @assignment.save!
+        json = get_assignment
+        expect(json.key?('can_submit')).to be_present
+        expect(json['can_submit']).to be_falsey
+      end
+
+      it 'is false if the assignment is locked' do
+        @assignment.unlock_at = 2.days.from_now
+        @assignment.save!
+        json = get_assignment
+        expect(json.key?('can_submit')).to be_present
+        expect(json['can_submit']).to be_falsey
+      end
+
+      it 'is false if the allowed_attempts are used' do
+        @assignment.allowed_attempts = 1
+        @assignment.submit_homework(@student, submission_type: "online_text_entry", body: "Assignment submitted")
+        @assignment.save!
+        json = get_assignment
+        expect(json.key?('can_submit')).to be_present
+        expect(json['can_submit']).to be_falsey
+      end
+
+      it 'does not show when getting all assignments' do
+        json = api_call(:get,
+                 "/api/v1/courses/#{@course.id}/assignments/?include[]=can_submit",
+                 {:controller => "assignments_api",
+                  :action => "index",
+                  :format => "json",
+                  :course_id => @course.id.to_s,
+                  :include => ["can_submit"]})
+        expect(json.first.key?('description')).to be_present
+        expect(json.first.key?('can_submit')).not_to be_present
+      end
+
+      it 'does not show when can_submit param is not included' do
+        json = api_call(:get,
+                        "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
+                        {:controller => "assignments_api",
+                         :action => "show",
+                         :format => "json",
+                         :course_id => @course.id.to_s,
+                         :id => @assignment.id})
+        expect(json.key?('description')).to be_present
+        expect(json.key?('can_submit')).not_to be_present
       end
     end
   end
@@ -5019,6 +5406,16 @@ describe AssignmentsApiController, type: :request do
 
         it { is_expected.to have_received(:fail_to_duplicate) }
       end
+
+      context "when duplicated_successfully is true after timeout" do
+        before do
+          @assignment.update(workflow_state: 'failed_to_duplicate')
+        end
+
+        let(:duplicated_successfully) { true }
+
+        it { is_expected.to have_received(:finish_duplicating) }
+      end
     end
 
     context "with the cc_imported_successfully parameter" do
@@ -5066,6 +5463,8 @@ describe AssignmentsApiController, type: :request do
     end
 
     it "includes submissions for observed users when requested with all assignments" do
+      @assignment.unmute!
+      @submission.reload
       json = api_call_as_user(@observer, :get,
                               "/api/v1/courses/#{@observer_course.id}/assignments?include[]=observed_users&include[]=submission",
                               { :controller => 'assignments_api',
@@ -5084,7 +5483,7 @@ describe AssignmentsApiController, type: :request do
          "grading_period_id" => @submission.grading_period_id,
          "grade_matches_current_submission" => true,
          "graded_at" => nil,
-         "posted_at" => nil,
+         "posted_at" => @submission.posted_at.as_json,
          "grader_id" => @teacher.id,
          "id" => @submission.id,
          "score" => 99.0,
@@ -5106,6 +5505,8 @@ describe AssignmentsApiController, type: :request do
     end
 
     it "includes submissions for observed users when requested with a single assignment" do
+      @assignment.unmute!
+      @submission.reload
       json = api_call_as_user(@observer, :get,
                               "/api/v1/courses/#{@observer_course.id}/assignments/#{@assignment.id}?include[]=observed_users&include[]=submission",
                               { :controller => 'assignments_api',
@@ -5124,7 +5525,7 @@ describe AssignmentsApiController, type: :request do
          "grading_period_id" => @submission.grading_period_id,
          "grade_matches_current_submission" => true,
          "graded_at" => nil,
-         "posted_at" => nil,
+         "posted_at" => @submission.posted_at.as_json,
          "grader_id" => @teacher.id,
          "id" => @submission.id,
          "score" => 99.0,
@@ -5300,6 +5701,304 @@ describe AssignmentsApiController, type: :request do
       expect(a.points_possible).to eq 0
     end
   end
+
+  describe "PUT bulk_update" do
+    before :once do
+      course_with_teacher(:active_all => true)
+      @s1 = @course.course_sections.create! :name => 'other section'
+      @a0 = @course.assignments.create! :title => 'no dates'
+      @a1 = @course.assignments.create! :title => 'basic', :unlock_at => 5.days.ago, :due_at => 4.days.ago, :lock_at => 2.days.from_now
+      @a2 = @course.assignments.create! :title => 'with overrides', :unlock_at => 1.day.ago, :due_at => 3.days.from_now, :lock_at => 4.days.from_now
+      @ao0 = assignment_override_model :assignment => @a2, :set => @course.default_section, :unlock_at => 4.days.ago, :due_at => 3.days.ago, :lock_at => 4.days.from_now
+      @ao1 = assignment_override_model :assignment => @a2, :set => @s1, :due_at => 5.days.from_now, :lock_at => 6.days.from_now
+      @new_dates = (7..9).map { |x| x.days.from_now }
+    end
+
+    it "requires manage_assignments rights" do
+      student_in_course(:active_all => true)
+      api_bulk_update(@course, [], expected_status: 401)
+    end
+
+    it "expects an array of assignments" do
+      api_bulk_update(@course, {}, expected_status: 400)
+    end
+
+    it "rejects an invalid assignment id" do
+      api_bulk_update(@course, [{'id' => 0, 'all_dates' => [{'id' => 0, 'all_dates' => []}]}], expected_status: 404)
+    end
+
+    it "updates assignment dates" do
+      api_bulk_update(@course, [{
+                                 'id' => @a0.id,
+                                 'all_dates' => [
+                                   {
+                                     'base' => true,
+                                     'due_at' => @new_dates[1].iso8601
+                                   }
+                                 ]
+                               },
+                               {
+                                 'id' => @a1.id,
+                                 'all_dates' => [
+                                   {
+                                     'base' => true,
+                                     'unlock_at' => @new_dates[0].iso8601,
+                                     'due_at' => @new_dates[1].iso8601,
+                                     'lock_at' => @new_dates[2].iso8601
+                                   }
+                                 ]
+                               }])
+      expect(@a0.reload.due_at.to_i).to eq @new_dates[1].to_i
+      expect(@a0.unlock_at).to be_nil
+      expect(@a0.lock_at).to be_nil
+
+      expect(@a1.reload.due_at.to_i).to eq @new_dates[1].to_i
+      expect(@a1.unlock_at.to_i).to eq @new_dates[0].to_i
+      expect(@a1.lock_at.to_i).to eq @new_dates[2].to_i
+    end
+
+    context "cache register" do
+      specs_require_cache(:redis_cache_store)
+
+      it "should clear the cache register values correctly" do
+        old_key = Timecop.freeze(1.minute.ago) { @a0.cache_key(:availability) }
+        api_bulk_update(@course, [{
+          'id' => @a0.id,
+          'all_dates' => [{'base' => true, 'due_at' => @new_dates[1].iso8601}]
+        }])
+        expect(@a0.cache_key(:availability)).to_not eq old_key
+      end
+    end
+
+    it "validates assignment dates" do
+      json = api_bulk_update(@course, [{
+                                         'id' => @a0.id,
+                                         'all_dates' => [
+                                           {
+                                             'base' => true,
+                                             'due_at' => @new_dates[1].iso8601
+                                           }
+                                         ]
+                                       },
+                                       {
+                                         'id' => @a1.id,
+                                         'all_dates' => [
+                                           {
+                                             'base' => true,
+                                             'unlock_at' => @new_dates[1].iso8601,
+                                             'due_at' => @new_dates[0].iso8601, # out of range
+                                             'lock_at' => @new_dates[2].iso8601
+                                           }
+                                         ]
+                                       }],
+                             expected_result: 'failed')
+      expect(json[0]['assignment_id']).to eq @a1.id
+      expect(json[0]['errors']['due_at'][0]['message']).to eq "must be between availability dates"
+
+      # ensure the partial update didn't happen
+      expect(@a0.due_at.to_i).not_to eq @new_dates[1].to_i
+    end
+
+    it "updates override dates" do
+      api_bulk_update(@course, [{
+                                  'id' => @a2.id,
+                                  'all_dates' => [
+                                    {
+                                      'id' => nil,
+                                      'base' => true,
+                                      'due_at' => @new_dates[2].iso8601
+                                    },
+                                    {
+                                      'id' => @ao0.id,
+                                      'due_at' => @new_dates[1].iso8601,
+                                      'lock_at' => @new_dates[2].iso8601
+                                    },
+                                    {
+                                      'id' => @ao1.id,
+                                      'unlock_at' => @new_dates[0].iso8601,
+                                      'due_at' => @new_dates[1].iso8601,
+                                      'lock_at' => @new_dates[2].iso8601
+                                    }
+                                  ]
+                                }])
+      @a2.reload
+      expect(@a2.due_at.to_i).to eq(@new_dates[2].to_i)
+
+      @ao0.reload
+      expect(@ao0).not_to be_unlock_at_overridden
+      expect(@ao0).to be_due_at_overridden
+      expect(@ao0.due_at.to_i).to eq @new_dates[1].to_i
+      expect(@ao0).to be_lock_at_overridden
+      expect(@ao0.lock_at.to_i).to eq @new_dates[2].to_i
+
+      @ao1.reload
+      expect(@ao1).to be_unlock_at_overridden
+      expect(@ao1.unlock_at.to_i).to eq @new_dates[0].to_i
+      expect(@ao1.due_at.to_i).to eq @new_dates[1].to_i
+      expect(@ao1).to be_lock_at_overridden
+      expect(@ao1.lock_at.to_i).to eq @new_dates[2].to_i
+    end
+
+    describe "with grading periods" do
+      before :once do
+        grading_period_group = Factories::GradingPeriodGroupHelper.new.create_for_account(@course.root_account)
+        term = @course.enrollment_term
+        term.grading_period_group = grading_period_group
+        term.save!
+        Factories::GradingPeriodHelper.new.create_for_group(grading_period_group, {
+          start_date: 2.weeks.ago, end_date: 2.days.ago, close_date: 1.day.ago
+        })
+        Factories::GradingPeriodHelper.new.create_for_group(grading_period_group, {
+          start_date: 1.day.ago, end_date: 1.month.from_now, close_date: 2.months.from_now
+        })
+        Factories::GradingPeriodHelper.new.create_for_group(grading_period_group, {
+          start_date: 2.months.from_now, end_date: 4.months.from_now, close_date: 5.months.from_now
+        })
+        student_in_course(active_all: true)
+        @user = @teacher
+      end
+
+      it "prohibits moving due/override dates into or out of a closed grading period" do
+        data = [
+          {
+            'id' => @a1.id, # in a closed grading period
+            'all_dates' => [
+              {
+                'base' => true,
+                'due_at' => 5.days.from_now
+              }
+            ]
+          },
+          {
+            'id' => @a2.id,
+            'all_dates' => [
+              {
+                'id' => @ao0.id, # in a closed grading period
+                'due_at' => 5.days.from_now
+              },
+              {
+                'id' => @ao1.id, # not in a closed grading period
+                'due_at' => 5.days.ago
+              }
+            ]
+          }]
+        json = api_bulk_update(@course, data, expected_result: 'failed')
+
+        a1_json = json.detect { |r| r['assignment_id'] == @a1.id }
+        expect(a1_json['errors']['due_at'][0]['message']).to eq "Cannot change the due date when due in a closed grading period"
+
+        ao0_json = json.detect { |r| r['assignment_override_id'] == @ao0.id }
+        expect(ao0_json['assignment_id']).to eq @a2.id
+        expect(ao0_json['errors']['due_at'][0]['message']).to eq "Cannot change the due date of an override in a closed grading period"
+
+        ao1_json = json.detect { |r| r['assignment_override_id'] == @ao1.id }
+        expect(ao1_json['assignment_id']).to eq @a2.id
+        expect(ao1_json['errors']['due_at'][0]['message']).to eq "Cannot change an override due date to a date within a closed grading period"
+      end
+
+      it "recomputes scores once when assignments get moved to new grading periods" do
+        data = [
+          {
+            'id' => @a0.id,
+            'all_dates' => [
+              {
+                'base' => true,
+                'due_at' => 5.days.from_now # third grading period to second
+              }
+            ]
+          },
+          {
+            'id' => @a2.id,
+            'all_dates' => [
+              {
+                'id' => @ao1.id,
+                'due_at' => 3.months.from_now # second grading period to third
+              }
+            ]
+          }]
+        expect_any_instance_of(Course).to receive(:recompute_student_scores_without_send_later).once
+        api_bulk_update(@course, data)
+      end
+
+      it "sets can_edit on each date if requested" do
+        json = api_get_assignments_index_from_course(@course, include: %w(all_dates can_edit))
+        a0_json = json.detect { |a| a['id'] == @a0.id }
+        expect(a0_json['can_edit']).to eq true
+        expect(a0_json['all_dates'].map { |d| d['can_edit'] }).to eq [true]
+        expect(a0_json['all_dates'].map { |d| d['in_closed_grading_period'] }).to eq [false]
+
+        a1_json = json.detect { |a| a['id'] == @a1.id }
+        expect(a1_json['can_edit']).to eq true
+        expect(a1_json['all_dates'].map { |d| d['can_edit'] }).to eq [false]
+        expect(a1_json['all_dates'].map { |d| d['in_closed_grading_period'] }).to eq [true]
+
+        a2_json = json.detect { |a| a['id'] == @a2.id }
+        expect(a2_json['can_edit']).to eq true
+
+        ao0_json = a2_json['all_dates'].detect { |ao| ao['id'] == @ao0.id }
+        expect(ao0_json['can_edit']).to eq false
+        expect(ao0_json['in_closed_grading_period']).to eq true
+
+        ao1_json = a2_json['all_dates'].detect { |ao| ao['id'] == @ao1.id }
+        expect(ao1_json['can_edit']).to eq true
+        expect(ao1_json['in_closed_grading_period']).to eq false
+      end
+
+      it "allows account admins to edit whatever they want" do
+        account_admin_user
+        json = api_get_assignments_index_from_course(@course, include: %w(all_dates can_edit))
+        a0_json = json.detect { |a| a['id'] == @a0.id }
+        expect(a0_json['can_edit']).to eq true
+        expect(a0_json['all_dates'].map { |d| d['can_edit'] }).to eq [true]
+        expect(a0_json['all_dates'].map { |d| d['in_closed_grading_period'] }).to eq [false]
+
+        a1_json = json.detect { |a| a['id'] == @a1.id }
+        expect(a1_json['can_edit']).to eq true
+        expect(a1_json['all_dates'].map { |d| d['can_edit'] }).to eq [true]
+        expect(a1_json['all_dates'].map { |d| d['in_closed_grading_period'] }).to eq [true]
+
+        a2_json = json.detect { |a| a['id'] == @a2.id }
+        expect(a2_json['can_edit']).to eq true
+
+        ao0_json = a2_json['all_dates'].detect { |ao| ao['id'] == @ao0.id }
+        expect(ao0_json['can_edit']).to eq true
+        expect(ao0_json['in_closed_grading_period']).to eq true
+
+        ao1_json = a2_json['all_dates'].detect { |ao| ao['id'] == @ao1.id }
+        expect(ao1_json['can_edit']).to eq true
+        expect(ao1_json['in_closed_grading_period']).to eq false
+      end
+    end
+
+    context "with moderated grading" do
+      before :once do
+        @course.account.role_overrides.create!(permission: :select_final_grade, enabled: false, role: ta_role)
+        ta_in_course(:active_all => true)
+
+        @a0.moderated_grading = true
+        @a0.final_grader_id = @teacher
+        @a0.grader_count = 1
+        @a0.save!
+      end
+
+      it "disallows editing moderated assignments if you're not the moderator" do
+        api_bulk_update(@course, [{'id' => @a0.id, 'all_dates' => []}], expected_status: 401)
+        api_bulk_update(@course, [{'id' => @a1.id, 'all_dates' => []}])
+      end
+
+      it "sets can_edit on each date if requested" do
+        json = api_get_assignments_index_from_course(@course, include: %w(all_dates can_edit))
+
+        a0_json = json.detect { |a| a['id'] == @a0.id }
+        expect(a0_json['can_edit']).to eq false
+        expect(a0_json['all_dates'].map { |d| d['can_edit'] }).to eq [false]
+
+        a1_json = json.detect { |a| a['id'] == @a1.id }
+        expect(a1_json['can_edit']).to eq true
+        expect(a1_json['all_dates'].map { |d| d['can_edit'] }).to eq [true]
+      end
+    end
+  end
 end
 
 def api_get_assignments_index_from_course(course, params = {})
@@ -5405,4 +6104,20 @@ def api_create_assignment_in_course(course,assignment_params)
              :format => 'json',
              :course_id => course.id.to_s
            }, {:assignment => assignment_params })
+end
+
+def api_bulk_update(course, data, expected_status: 200, expected_result: 'completed')
+  json = api_call(:put, "/api/v1/courses/#{course.id}/assignments/bulk_update",
+           { :controller => 'assignments_api', :action => 'bulk_update',
+             :format => 'json', :course_id => course.to_param },
+           { :_json => data }, {}, { :expected_status => expected_status })
+  return json unless response.status == 200
+
+  progress = Progress.find(json['id'])
+  expect(progress['workflow_state']).to eq 'queued'
+  run_jobs
+
+  progress.reload
+  expect(progress['workflow_state']).to eq expected_result
+  progress.results
 end

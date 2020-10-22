@@ -66,6 +66,12 @@ class ActiveRecord::Base
     def default_scope(*)
       raise "please don't ever use default_scope. it may seem like a great solution, but I promise, it isn't"
     end
+
+    def vacuum
+      GuardRail.activate(:deploy) do
+        connection.execute("VACUUM ANALYZE #{quoted_table_name}")
+      end
+    end
   end
 
   def read_or_initialize_attribute(attr_name, default_value)
@@ -420,7 +426,9 @@ class ActiveRecord::Base
         @collkey ||= {}
         @collkey[Shard.current.database_server.id] = connection.extension_installed?(:pg_collkey)
       end
-      if (schema = @collkey[Shard.current.database_server.id])
+      if (collation = Canvas::ICU.choose_pg12_collation(connection.icu_collations) && false)
+        "(#{col} COLLATE #{collation})"
+      elsif (schema = @collkey[Shard.current.database_server.id])
         # The collation level of 3 is the default, but is explicitly specified here and means that
         # case, accents and base characters are all taken into account when creating a collation key
         # for a string - more at https://pgxn.org/dist/pg_collkey/0.5.1/
@@ -481,7 +489,7 @@ class ActiveRecord::Base
     result = if ActiveRecord::Base.configurations[Rails.env]['adapter'] == 'postgresql'
       sql = ''
       sql << "SELECT NULL AS #{column} WHERE EXISTS (SELECT * FROM #{quoted_table_name} WHERE #{column} IS NULL) UNION ALL (" if include_nil
-      sql << <<-SQL
+      sql << <<~SQL
         WITH RECURSIVE t AS (
           SELECT MIN(#{column}) AS #{column} FROM #{quoted_table_name}
           UNION ALL
@@ -526,6 +534,17 @@ class ActiveRecord::Base
 
     reflection = super[name.to_s]
 
+    if name.to_s == 'developer_key'
+      reflection.instance_eval do
+        def association_class
+          DeveloperKey::CacheOnAssociation
+        end
+      end
+    end
+
+    include Canvas::RootAccountCacher if name.to_s == 'root_account'
+    Canvas::AccountCacher.apply_to_reflections(self)
+
     if reflection.options[:polymorphic].is_a?(Array) ||
         reflection.options[:polymorphic].is_a?(Hash)
       reflection.options[:exhaustive] = exhaustive
@@ -535,20 +554,25 @@ class ActiveRecord::Base
     reflection
   end
 
-  def self.add_polymorph_methods(reflection)
-    unless @polymorph_module
-      @polymorph_module = Module.new
-      include(@polymorph_module)
-    end
-
+  def self.canonicalize_polymorph_list(list)
     specifics = []
-    Array.wrap(reflection.options[:polymorphic]).map do |name|
+    Array.wrap(list).each do |name|
       if name.is_a?(Hash)
         specifics.concat(name.to_a)
       else
         specifics << [name, name.to_s.camelize]
       end
     end
+    specifics
+  end
+
+  def self.add_polymorph_methods(reflection)
+    unless @polymorph_module
+      @polymorph_module = Module.new
+      include(@polymorph_module)
+    end
+
+    specifics = canonicalize_polymorph_list(reflection.options[:polymorphic])
 
     unless reflection.options[:exhaustive] == false
       specific_classes = specifics.map(&:last).sort
@@ -614,7 +638,7 @@ class ActiveRecord::Base
       rescue ActiveRecord::RecordNotUnique
       end
     end
-    Shackles.activate(:master) do
+    GuardRail.activate(:primary) do
       result = transaction(:requires_new => true) { uncached { yield(retries) } }
       connection.clear_query_cache
       result
@@ -622,8 +646,8 @@ class ActiveRecord::Base
   end
 
   def self.current_xlog_location
-    Shard.current(shard_category).database_server.unshackle do
-      Shackles.activate(:master) do
+    Shard.current(shard_category).database_server.unguard do
+      GuardRail.activate(:primary) do
         if Rails.env.test? ? self.in_transaction_in_test? : connection.open_transactions > 0
           raise "don't run current_xlog_location in a transaction"
         elsif connection.send(:postgresql_version) >= 100000
@@ -636,10 +660,10 @@ class ActiveRecord::Base
   end
 
   def self.wait_for_replication(start: nil, timeout: nil)
-    return true unless Shackles.activate(:slave) { connection.readonly? }
+    return true unless GuardRail.activate(:secondary) { connection.readonly? }
 
     start ||= current_xlog_location
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       diff_fn = connection.send(:postgresql_version) >= 100000 ?
         "pg_wal_lsn_diff" :
         "pg_xlog_location_diff"
@@ -682,8 +706,19 @@ class ActiveRecord::Base
       end
     end
 
-    transaction do
-      connection.bulk_insert(table_name, records)
+    if self.respond_to?(:attrs_in_partition_groups)
+      # this model is partitioned, we need to send a separate
+      # insert statement for each partition represented
+      # in the input records
+      self.attrs_in_partition_groups(records) do |partition_name, partition_records|
+        transaction do
+          connection.bulk_insert(partition_name, partition_records)
+        end
+      end
+    else
+      transaction do
+        connection.bulk_insert(table_name, records)
+      end
     end
   end
 
@@ -695,7 +730,24 @@ class ActiveRecord::Base
     end
   end
 
-  scope :non_shadow, ->(key = primary_key) { where("#{key}<=?", Shard::IDS_PER_SHARD) }
+  scope :non_shadow, ->(key = primary_key) { where("#{key}<=? AND #{key}>?", Shard::IDS_PER_SHARD, 0) }
+
+  # skips validations, callbacks, and a transaction
+  # do _NOT_ improve in the future to handle validations and callbacks - make
+  # it a separate method or optional functionality. some callers explicitly
+  # rely on no callbacks or validations
+  def save_without_transaction(touch: true)
+    return unless changed?
+    self.updated_at = Time.now.utc if touch
+    if new_record?
+      self.created_at = updated_at if touch
+      self.id = self.class._insert_record(attributes_with_values(changed_attribute_names_to_save))
+      @new_record = false
+    else
+      update_columns(attributes_with_values(changed_attribute_names_to_save))
+    end
+    changes_applied
+  end
 end
 
 module UsefulFindInBatches
@@ -705,6 +757,8 @@ module UsefulFindInBatches
     # see the contents of our current transaction)
     if connection.open_transactions == 0 && !start && eager_load_values.empty? && !ActiveRecord::Base.in_migration && !strategy || strategy == :copy
       self.activate { |r| r.find_in_batches_with_copy(**kwargs, &block) }
+    elsif strategy == :pluck_ids
+      self.activate { |r| r.find_in_batches_with_pluck_ids(**kwargs, &block) }
     elsif should_use_cursor? && !start && eager_load_values.empty? && !strategy || strategy == :cursor
       self.activate { |r| r.find_in_batches_with_cursor(**kwargs, &block) }
     elsif find_in_batches_needs_temp_table? && !strategy || strategy == :temp_table
@@ -763,7 +817,7 @@ ActiveRecord::Relation.class_eval do
   private :find_in_batches_needs_temp_table?
 
   def should_use_cursor?
-    (Shackles.environment == :slave || connection.readonly?)
+    (GuardRail.environment == :secondary || connection.readonly?)
   end
 
   def find_in_batches_with_cursor(options = {})
@@ -863,17 +917,36 @@ ActiveRecord::Relation.class_eval do
     end
   end
 
+  # in some cases we're doing a lot of work inside
+  # the yielded block, and holding open a transaction
+  # or even a connection while we do all that work can
+  # be a problem for the database, especially if a lot
+  # of these are happening at once.  This strategy
+  # makes one query to hold onto all the IDs needed for the
+  # iteration (make sure they'll fit in memory, or you could be sad)
+  # and yields the objects in batches in the same order as the scope specified
+  # so the DB connection can be fully recycled during each block.
+  def find_in_batches_with_pluck_ids(options = {})
+    batch_size = options[:batch_size] || 1000
+    all_object_ids = pluck(:id)
+    current_order_values = order_values
+    all_object_ids.in_groups_of(batch_size) do |id_batch|
+      object_batch = klass.unscoped.where(id: id_batch).order(current_order_values)
+      yield object_batch
+    end
+  end
+
   def find_in_batches_with_temp_table(options = {})
-    Shard.current.database_server.unshackle do
+    Shard.current.database_server.unguard do
       can_do_it = Rails.env.production? ||
         ActiveRecord::Base.in_migration ||
-        Shackles.environment == :deploy ||
+        GuardRail.environment == :deploy ||
         (!Rails.env.test? && connection.open_transactions > 0) ||
         ActiveRecord::Base.in_transaction_in_test?
       raise "find_in_batches_with_temp_table probably won't work outside a migration
              and outside a transaction. Unfortunately, it's impossible to automatically
              determine a better way to do it that will work correctly. You can try
-             switching to slave first (then switching to master if you modify anything
+             switching to secondary first (then switching to primary if you modify anything
              inside your loop), wrapping in a transaction (but be wary of locking records
              for the duration of your query if you do any writes in your loop), or not
              forcing find_in_batches to use a temp table (avoiding custom selects,
@@ -899,31 +972,28 @@ ActiveRecord::Relation.class_eval do
       table = "#{table_name}_find_in_batches_temp_table_#{sql.hash.abs.to_s(36)}"
       table = table[-63..-1] if table.length > 63
 
-      connection.execute "CREATE TEMPORARY TABLE #{table} AS #{sql}"
+      rows = connection.update("CREATE TEMPORARY TABLE #{table} AS #{sql}")
+
       begin
-        index = "temp_primary_key"
-        case connection.adapter_name
-          when 'PostgreSQL'
-            begin
-              old_proc = connection.raw_connection.set_notice_processor {}
-              if pluck && pluck.any?{|p| p == primary_key.to_s}
-                connection.execute("CREATE INDEX #{connection.quote_local_table_name(index)} ON #{connection.quote_local_table_name(table)}(#{connection.quote_column_name(primary_key)})")
-                index = primary_key.to_s
-              else
-                pluck.unshift(index) if pluck
-                connection.execute "ALTER TABLE #{table}
-                                 ADD temp_primary_key SERIAL PRIMARY KEY"
-              end
-            ensure
-              connection.raw_connection.set_notice_processor(&old_proc) if old_proc
+        if (rows > batch_size)
+          index = "temp_primary_key"
+          begin
+            old_proc = connection.raw_connection.set_notice_processor {}
+            if pluck && pluck.any?{|p| p == primary_key.to_s}
+              connection.execute("CREATE INDEX #{connection.quote_local_table_name(index)} ON #{connection.quote_local_table_name(table)}(#{connection.quote_column_name(primary_key)})")
+              index = primary_key.to_s
+            else
+              pluck.unshift(index) if pluck
+              connection.execute "ALTER TABLE #{table}
+                               ADD temp_primary_key SERIAL PRIMARY KEY"
             end
-          else
-            raise "Temp tables not supported!"
+          ensure
+            connection.raw_connection.set_notice_processor(&old_proc) if old_proc
+          end
         end
 
         includes = includes_values + preload_values
         klass.unscoped do
-
           quoted_plucks = pluck && pluck.map do |column_name|
             # Rails 4.2 is going to try to quote them anyway but unfortunately not to the temp table, so just make it explicit
             column_names.include?(column_name) ?
@@ -931,15 +1001,26 @@ ActiveRecord::Relation.class_eval do
           end
 
           if pluck
-            batch = klass.from(table).order(Arel.sql(index)).limit(batch_size).pluck(*quoted_plucks)
+            if index
+              batch = klass.from(table).order(Arel.sql(index)).limit(batch_size).pluck(*quoted_plucks)
+            else
+              batch = klass.from(table).pluck(*quoted_plucks)
+            end
           else
-            sql = "SELECT * FROM #{table} ORDER BY #{index} LIMIT #{batch_size}"
-            batch = klass.find_by_sql(sql)
+            if index
+              sql = "SELECT * FROM #{table} ORDER BY #{index} LIMIT #{batch_size}"
+              batch = klass.find_by_sql(sql)
+            else
+              batch = klass.find_by_sql("SELECT * FROM #{table}")
+            end
           end
-          while !batch.empty?
+
+          while rows > 0
+            rows -= batch.size
+
             ActiveRecord::Associations::Preloader.new.preload(batch, includes) if includes
             yield batch
-            break if batch.size < batch_size
+            break if rows <= 0 || batch.size < batch_size
 
             if pluck
               last_value = pluck.length == 1 ? batch.last : batch.last[pluck.index(index)]
@@ -988,16 +1069,21 @@ ActiveRecord::Relation.class_eval do
     scope
   end
 
-  def lock_in_order
-    lock(:no_key_update).order(:id).pluck(:id)
+  def update_all_locked_in_order(updates)
+    locked_scope = lock(:no_key_update).order(:id)
+    if Setting.get("update_all_locked_in_order_subquery", "true") == "true"
+      unscoped.where(id: locked_scope).update_all(updates)
+    else
+      transaction do
+        ids = locked_scope.pluck(:id)
+        unscoped.where(id: ids).update_all(updates) unless ids.empty?
+      end
+    end
   end
 
   def touch_all
     self.activate do |relation|
-      relation.transaction do
-        ids_to_touch = relation.not_recently_touched.lock_in_order
-        unscoped.where(id: ids_to_touch).update_all(updated_at: Time.now.utc) if ids_to_touch.any?
-      end
+      relation.update_all_locked_in_order(updated_at: Time.now.utc)
     end
   end
 
@@ -1093,7 +1179,7 @@ module UpdateAndDeleteWithJoins
     join_conditions = []
     joins_sql.strip.split('INNER JOIN')[1..-1].each do |join|
       # this could probably be improved
-      raise "PostgreSQL update_all/delete_all only supports INNER JOIN" unless join.strip =~ /([a-zA-Z0-9'"_\.]+(?:(?:\s+[aA][sS])?\s+[a-zA-Z0-9'"_]+)?)\s+ON\s+(.*)/
+      raise "PostgreSQL update_all/delete_all only supports INNER JOIN" unless join.strip =~ /([a-zA-Z0-9'"_\.]+(?:(?:\s+[aA][sS])?\s+[a-zA-Z0-9'"_]+)?)\s+ON\s+(.*)/m
       tables << $1
       join_conditions << $2
     end
@@ -1103,8 +1189,8 @@ module UpdateAndDeleteWithJoins
   def update_all(updates, *args)
     db = Shard.current(klass.shard_category).database_server
     if joins_values.empty?
-      if ::Shackles.environment != db.shackles_environment
-        Shard.current.database_server.unshackle {return super }
+      if ::GuardRail.environment != db.guard_rail_environment
+        Shard.current.database_server.unguard {return super }
       else
         return super
       end
@@ -1143,8 +1229,8 @@ module UpdateAndDeleteWithJoins
     end
     where_sql = collector.value
     sql.concat('WHERE ' + where_sql)
-    if ::Shackles.environment != db.shackles_environment
-      Shard.current.database_server.unshackle {connection.update(sql, "#{name} Update")}
+    if ::GuardRail.environment != db.guard_rail_environment
+      Shard.current.database_server.unguard {connection.update(sql, "#{name} Update")}
     else
       connection.update(sql, "#{name} Update")
     end
@@ -1221,7 +1307,7 @@ ActiveRecord::ConnectionAdapters::AbstractAdapter.class_eval do
     keys = records.first.keys
     quoted_keys = keys.map{ |k| quote_column_name(k) }.join(', ')
     records.each do |record|
-      execute <<-SQL
+      execute <<~SQL
         INSERT INTO #{quote_table_name(table_name)}
           (#{quoted_keys})
         VALUES
@@ -1386,30 +1472,6 @@ ActiveRecord::Migrator.migrations_paths.concat Dir[Rails.root.join('gems', 'plug
 ActiveRecord::Tasks::DatabaseTasks.migrations_paths = ActiveRecord::Migrator.migrations_paths
 
 ActiveRecord::ConnectionAdapters::SchemaStatements.class_eval do
-  # in anticipation of having to re-run migrations due to integrity violations or
-  # killing stuff that is holding locks too long
-  def add_foreign_key_if_not_exists(from_table, to_table, options = {})
-    options[:column] ||= "#{to_table.to_s.singularize}_id"
-    column = options[:column]
-    case self.adapter_name
-    when 'PostgreSQL'
-      foreign_key_name = foreign_key_name(from_table, options)
-      schema = @config[:use_qualified_names] ? quote(shard.name) : 'current_schema()'
-      value = select_value("SELECT convalidated FROM pg_constraint INNER JOIN pg_namespace ON pg_namespace.oid=connamespace WHERE conname='#{foreign_key_name}' AND nspname=#{schema}")
-      if value == 'f'
-        execute("ALTER TABLE #{quote_table_name(from_table)} DROP CONSTRAINT #{quote_table_name(foreign_key_name)}")
-      elsif value
-        return
-      end
-
-      add_foreign_key(from_table, to_table, options)
-    else
-      foreign_key_name = foreign_key_name(from_table, column, options)
-      return if foreign_keys(from_table).find { |k| k.options[:name] == foreign_key_name }
-      add_foreign_key(from_table, to_table, options)
-    end
-  end
-
   def find_foreign_key(from_table, to_table, column: nil)
     column ||= "#{to_table.to_s.singularize}_id"
     foreign_keys(from_table).find do |key|
@@ -1434,9 +1496,55 @@ ActiveRecord::ConnectionAdapters::SchemaStatements.class_eval do
     end
   end
 
-  def remove_foreign_key_if_exists(table, options = {})
-    return unless foreign_key_exists?(table, options)
-    remove_foreign_key(table, options)
+  def foreign_key_for(from_table, options_or_to_table = {})
+    return unless supports_foreign_keys?
+    fks = foreign_keys(from_table).select { |fk| fk.defined_for? options_or_to_table }
+    # prefer a FK on a column named after the table
+    unless options_or_to_table.is_a?(Hash)
+      column = foreign_key_column_for(options_or_to_table) if options_or_to_table
+      return fks.find { |fk| fk.column == column} || fks.first
+    end
+    fks.first
+  end
+
+  def remove_foreign_key(from_table, *args)
+    return unless supports_foreign_keys?
+
+    raise ArgumentError if args.length > 2
+
+    # support remove_foreign_key :table, :table, if_exists: stuff
+    # OR
+    # remove_foreign_key :table, column: :stuff
+    # OR
+    # remove_foreign_key :table, column: :stuff, if_exists: stuff
+    options = args.last
+    options = {} unless options.is_a?(Hash)
+
+    if CANVAS_RAILS5_2
+      # when removing this, simplify the whole method signature to `to_table = nil, **options`
+      options_or_to_table = args.first || {}
+
+      if options.delete(:if_exists)
+        fk_name_to_delete = foreign_key_for(from_table, options_or_to_table)&.name
+        return if fk_name_to_delete.nil?
+      else
+        fk_name_to_delete = foreign_key_for!(from_table, options_or_to_table).name
+      end
+    else
+      options[:to_table] = args.first unless args.first.is_a?(Hash)
+
+      if options.delete(:if_exists)
+        fk_name_to_delete = foreign_key_for(from_table, **options)&.name
+        return if fk_name_to_delete.nil?
+      else
+        fk_name_to_delete = foreign_key_for!(from_table, **options).name        
+      end
+    end
+
+    at = create_alter_table from_table
+    at.drop_foreign_key fk_name_to_delete
+
+    execute schema_creation.accept(at)
   end
 end
 

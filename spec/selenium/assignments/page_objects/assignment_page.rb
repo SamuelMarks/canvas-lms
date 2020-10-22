@@ -61,7 +61,7 @@ class AssignmentPage
     end
 
     def manage_assignment_button
-      fj("a[role=button]:contains('Manage')")
+      fj("button:contains('Manage')")
     end
 
     def send_to_menuitem
@@ -70,6 +70,10 @@ class AssignmentPage
 
     def copy_to_menuitem
       fj("li:contains('Copy To...')")
+    end
+
+    def allowed_attempts_count
+      fj("div.control-group:contains('Allowed Attempts')")
     end
   end
 end

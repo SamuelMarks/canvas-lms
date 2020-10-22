@@ -35,6 +35,10 @@ describe DiscussionEntry do
       entry
       expect(discussion_topic_participant.reload.subscribed).to be_truthy
     end
+
+    it 'sets the root_account_id using topic' do
+      expect(entry.root_account_id).to eq topic.root_account_id
+    end
   end
 
   it "should not be marked as deleted when parent is deleted" do
@@ -282,6 +286,13 @@ describe DiscussionEntry do
         expect(@entry_4).to receive(:decrement_unread_counts_for_this_entry)
         @entry_4.destroy
       end
+    end
+
+    it 'should allow teacher entry on assignment topic to be destroyed' do
+      assignment = @course.assignments.create!(title: @topic.title, submission_types: 'discussion_topic')
+      topic = @course.discussion_topics.create!(title: "title", message: "message", user: @teacher, assignment: assignment)
+      entry = topic.discussion_entries.create!(message: "entry", user: @teacher)
+      expect { entry.destroy }.to_not raise_error
     end
 
     it "should decrement unread topic counts" do

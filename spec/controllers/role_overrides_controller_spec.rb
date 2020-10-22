@@ -100,7 +100,6 @@ describe RoleOverridesController do
 
     describe 'grouped permissions' do
       before :each do
-        @account.root_account.enable_feature!(:granular_permissions_wiki_pages)
         @grouped_permission = 'manage_wiki'
         @granular_permissions = ['manage_wiki_create', 'manage_wiki_delete', 'manage_wiki_update']
       end
@@ -117,6 +116,18 @@ describe RoleOverridesController do
         update_permissions({@grouped_permission => { locked: true }})
         expect(RoleOverride.count).to eq 3
         expect(RoleOverride.pluck(:locked)).to match_array Array.new(3, true)
+      end
+
+      it 'preserves granular permission states when unlocking the group' do
+        updates = {
+          @grouped_permission => { enabled: true, locked: true, explicit: true },
+          @granular_permissions[0] => { enabled: false, explicit: true },
+        }
+        update_permissions(updates)
+        expect(RoleOverride.count).to eq 3
+        update_permissions({@grouped_permission => { locked: false, explicit: true }})
+        expect(RoleOverride.pluck(:locked)).to match_array Array.new(3, false)
+        expect(RoleOverride.pluck(:enabled)).to match_array [true, true, false]
       end
 
       it 'should allow updating an individual permissions that belongs to a group' do
@@ -327,7 +338,6 @@ describe RoleOverridesController do
 
       context 'with granular permissions' do
         before :each do
-          @account.root_account.enable_feature!(:granular_permissions_wiki_pages)
           @grouped_permission = 'manage_wiki'
           @granular_permissions = ['manage_wiki_create', 'manage_wiki_delete', 'manage_wiki_update']
         end

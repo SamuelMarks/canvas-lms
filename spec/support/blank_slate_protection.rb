@@ -19,7 +19,7 @@ require_relative "./call_stack_utils"
 
 module BlankSlateProtection
   module ActiveRecord
-    def create_or_update(*)
+    def create_or_update(*, **)
       return super unless BlankSlateProtection.enabled?
       return super if caller.grep(BlankSlateProtection.exempt_patterns).present?
 
@@ -56,7 +56,7 @@ module BlankSlateProtection
     r_spec_helper
     add_onceler_hooks
     recreate_persistent_test_shards
-    ensure_built_in_roles
+    truncate_all_tables
   ].freeze
 
   class << self

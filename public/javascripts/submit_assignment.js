@@ -23,6 +23,7 @@ import GoogleDocsTreeView from 'compiled/views/GoogleDocsTreeView'
 import homework_submission_tool from 'jst/assignments/homework_submission_tool'
 import HomeworkSubmissionLtiContainer from 'compiled/external_tools/HomeworkSubmissionLtiContainer'
 import RCEKeyboardShortcuts from 'compiled/views/editor/KeyboardShortcuts' /* TinyMCE Keyboard Shortcuts for a11y */
+import iframeAllowances from 'jsx/external_apps/lib/iframeAllowances'
 import RichContentEditor from 'jsx/shared/rce/RichContentEditor'
 import {uploadFile} from 'jsx/shared/upload_file'
 import {
@@ -43,6 +44,7 @@ import 'jqueryui/tabs'
 import React from 'react'
 import ReactDOM from 'react-dom'
 import FileBrowser from 'jsx/shared/rce/FileBrowser'
+import {ProgressCircle} from '@instructure/ui-progress'
 
 var SubmitAssignment = {
   // This ensures that the tool links in the "More" tab (which only appears with 4
@@ -52,6 +54,9 @@ var SubmitAssignment = {
 
     const tool = $(this).data('tool')
     const url = `/courses/${ENV.COURSE_ID}/external_tools/${tool.id}/resource_selection?homework=1&assignment_id=${ENV.SUBMIT_ASSIGNMENT.ID}`
+
+    // create return view and attach postMessage listener for tools launched in dialog from the More tab
+    SubmitAssignment.homeworkSubmissionLtiContainer.embedLtiLaunch(tool.get('id'))
 
     const width = tool.get('homework_submission').selection_width || tool.get('selection_width')
     const height = tool.get('homework_submission').selection_height || tool.get('selection_height')
@@ -66,6 +71,7 @@ var SubmitAssignment = {
         $('<iframe/>', {
           frameborder: 0,
           src: url,
+          allow: iframeAllowances(),
           id: 'homework_selection_iframe',
           tabindex: '0'
         }).css({width, height})
@@ -128,6 +134,9 @@ $(document).ready(function() {
     '#submit_from_external_tool_form'
   )
 
+  // store for launching of tools from the More tab
+  SubmitAssignment.homeworkSubmissionLtiContainer = homeworkSubmissionLtiContainer
+
   // Add the Keyboard shortcuts info button
   if (!ENV.use_rce_enhancements) {
     const keyboardShortcutsView = new RCEKeyboardShortcuts()
@@ -187,6 +196,7 @@ $(document).ready(function() {
     $(this)
       .find('button')
       .attr('disabled', true)
+
     if ($(this).attr('id') == 'submit_online_upload_form') {
       event.preventDefault() && event.stopPropagation()
       const fileElements = $(this)
@@ -210,6 +220,28 @@ $(document).ready(function() {
           .find('button[type=submit]')
           .text(I18n.t('#button.submit_assignment', 'Submit Assignment'))
           .prop('disabled', false)
+      }
+
+      const progressIndicator = function(event) {
+        if (event.lengthComputable) {
+          const mountPoint = document.getElementById('progress_indicator')
+
+          if (mountPoint) {
+            ReactDOM.render(
+              <ProgressCircle
+                screenReaderLabel={I18n.t('Uploading Progress')}
+                size="x-small"
+                valueMax={event.total}
+                valueNow={event.loaded}
+                meterColor="info"
+                formatScreenReaderValue={({valueNow, valueMax}) =>
+                  I18n.t('%{percent}% complete', {percent: Math.round((valueNow * 100) / valueMax)})
+                }
+              />,
+              mountPoint
+            )
+          }
+        }
       }
 
       // warn user if they haven't uploaded any files
@@ -276,11 +308,15 @@ $(document).ready(function() {
         formData: $(this).getFormData(),
         formDataTarget: 'url',
         url: $(this).attr('action'),
+        onProgress: progressIndicator,
         success(data) {
           submitting = true
-          window.location = window.location.href
-            .replace(/\#$/g, '')
-            .replace(window.location.hash, '')
+          const url = new URL(window.location.href)
+          url.hash = ''
+          if (window.ENV.CONFETTI_ENABLED && !data?.submission?.late) {
+            url.searchParams.set('confetti', 'true')
+          }
+          window.location = url.toString()
         },
         error(data) {
           submissionForm
@@ -540,10 +576,13 @@ $(document).ready(function() {
       !!$('.bad_ext_msg:visible').length
     )
   }
+  function getFilename(fileInput) {
+    return fileInput.val().replace(/^.*?([^\\\/]*)$/, '$1')
+  }
   function updateRemoveLinkAltText(fileInput) {
     let altText = I18n.t('remove empty attachment')
     if (fileInput.val()) {
-      const filename = fileInput.val().replace(/^.*?([^\\\/]*)$/, '$1')
+      const filename = getFilename(fileInput)
       altText = I18n.t('remove %{filename}', {filename})
     }
     fileInput
@@ -553,7 +592,12 @@ $(document).ready(function() {
   }
   $('.submission_attachment input[type=file]').live('change', function() {
     updateRemoveLinkAltText($(this))
-    if (ENV.SUBMIT_ASSIGNMENT.ALLOWED_EXTENSIONS.length < 1 || $(this).val() == '') return
+    if ($(this).val() === '') return
+
+    $(this).focus()
+    const filename = getFilename($(this))
+    $.screenReaderFlashMessage(I18n.t('File selected for upload: %{filename}', {filename}))
+    if (ENV.SUBMIT_ASSIGNMENT.ALLOWED_EXTENSIONS.length < 1) return
 
     const ext = $(this)
       .val()

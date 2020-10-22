@@ -23,26 +23,30 @@ import {func} from 'prop-types'
 import {Tray} from '@instructure/ui-overlays'
 import {CloseButton} from '@instructure/ui-buttons'
 import {View} from '@instructure/ui-view'
-import {Spinner} from '@instructure/ui-elements'
+import {Spinner} from '@instructure/ui-spinner'
 import UnreadCounts from './UnreadCounts'
 import preventDefault from 'compiled/fn/preventDefault'
 import parseLinkHeader from 'compiled/fn/parseLinkHeader'
+import tourPubSub from '../nav_tourpoints/tourPubsub'
 
 const CoursesTray = React.lazy(() => import('./trays/CoursesTray'))
 const GroupsTray = React.lazy(() => import('./trays/GroupsTray'))
 const AccountsTray = React.lazy(() => import('./trays/AccountsTray'))
 const ProfileTray = React.lazy(() => import('./trays/ProfileTray'))
+const HistoryTray = React.lazy(() => import('./trays/HistoryTray'))
 const HelpTray = React.lazy(() => import('./trays/HelpTray'))
 
 const EXTERNAL_TOOLS_REGEX = /^\/accounts\/[^\/]*\/(external_tools)/
-const ACTIVE_ROUTE_REGEX = /^\/(courses|groups|accounts|grades|calendar|conversations|profile)/
+const ACTIVE_ROUTE_REGEX = /^\/(courses|groups|accounts|grades|calendar|conversations|profile)|^#history/
 const ACTIVE_CLASS = 'ic-app-header__menu-list-item--active'
 
 const TYPE_URL_MAP = {
-  courses: '/api/v1/users/self/favorites/courses?include[]=term&exclude[]=enrollments',
+  courses:
+    '/api/v1/users/self/favorites/courses?include[]=term&exclude[]=enrollments&sort=nickname',
   groups: '/api/v1/users/self/groups?include[]=can_access',
   accounts: '/api/v1/accounts',
   profile: '/api/v1/users/self/tabs',
+  history: '/api/v1/users/self/history',
   help: '/help_links'
 }
 
@@ -66,6 +70,8 @@ function getPortal() {
   }
   return portal
 }
+
+function noop() {}
 
 export default class Navigation extends React.Component {
   static propTypes = {
@@ -95,7 +101,9 @@ export default class Navigation extends React.Component {
     helpLoading: false,
     helpAreLoaded: false,
     profileAreLoading: false,
-    profileAreLoaded: false
+    profileAreLoaded: false,
+    historyLoading: false,
+    historyAreLoaded: false
   }
 
   componentDidMount() {
@@ -124,6 +132,34 @@ export default class Navigation extends React.Component {
         preventDefault(this.handleMenuClick.bind(this, type))
       )
     })
+    this.openPublishUnsubscribe = tourPubSub.subscribe(
+      'navigation-tray-open',
+      ({type, noFocus}) => {
+        this.ensureLoaded(type)
+        this.openTray(type, noFocus)
+
+        // If we're already open for the specified type
+        // send a message that we are open.
+        if (this.state.isTrayOpen && this.state.type === type) {
+          tourPubSub.publish('navigation-tray-opened', type)
+        }
+      }
+    )
+    this.closePublishUnsubscribe = tourPubSub.subscribe('navigation-tray-close', () => {
+      this.closeTray()
+    })
+    this.overrideDismissUnsubscribe = tourPubSub.subscribe(
+      'navigation-tray-override-dismiss',
+      tf => {
+        this.setState({overrideDismiss: tf})
+      }
+    )
+  }
+
+  componentWillUnmount() {
+    this.openPublishUnsubscribe && this.openPublishUnsubscribe()
+    this.overrideDismissUnsubscribe && this.overrideDismissUnsubscribe()
+    this.closePublishUnsubscribe && this.closePublishUnsubscribe()
   }
 
   componentDidUpdate(_prevProps, prevState) {
@@ -209,13 +245,17 @@ export default class Navigation extends React.Component {
     }
   }
 
-  openTray(type) {
-    this.setState({type, isTrayOpen: true, activeItem: type})
+  openTray(type, noFocus) {
+    // Sometimes we don't want the tray to capture focus,
+    // so we specify that here.
+    this.setState({type, noFocus, isTrayOpen: true, activeItem: type})
   }
 
   closeTray = () => {
     this.determineActiveLink()
-    this.setState({isTrayOpen: false}, () => {
+    // Regardless of whether it captured focus before,
+    // we should make sure it does on future openings.
+    this.setState({isTrayOpen: false, noFocus: false}, () => {
       setTimeout(() => {
         this.setState({type: null})
       }, 150)
@@ -263,6 +303,14 @@ export default class Navigation extends React.Component {
             counts={{unreadShares: this.state.unreadSharesCount}}
           />
         )
+      case 'history':
+        return (
+          <HistoryTray
+            history={this.state.history}
+            hasLoaded={this.state.historyAreLoaded}
+            closeTray={this.closeTray}
+          />
+        )
       case 'help':
         return (
           <HelpTray
@@ -289,6 +337,8 @@ export default class Navigation extends React.Component {
         return I18n.t('Profile tray')
       case 'help':
         return I18n.t('%{title} tray', {title: window.ENV.help_link_name})
+      case 'history':
+        return I18n.t('Recent History tray')
       default:
         return I18n.t('Global navigation tray')
     }
@@ -296,6 +346,7 @@ export default class Navigation extends React.Component {
 
   // Also have to attend to the unread dot on the mobile view inbox
   onInboxUnreadUpdate(unreadCount) {
+    if (this.state.unreadInboxCount !== unreadCount) this.setState({unreadInboxCount: unreadCount})
     const el = document.getElementById('mobileHeaderInboxUnreadBadge')
     if (el) el.style.display = unreadCount > 0 ? '' : 'none'
     if (typeof this.props.onDataReceived === 'function') this.props.onDataReceived()
@@ -331,16 +382,24 @@ export default class Navigation extends React.Component {
 
     return (
       <>
-        {this.state.isTrayOpen && (
-          <Tray
-            label={this.getTrayLabel()}
-            size="small"
-            open={this.state.isTrayOpen}
-            onDismiss={this.closeTray}
-            shouldCloseOnDocumentClick
-            mountNode={getPortal()}
-            theme={{smallWidth: '28em'}}
-          >
+        <Tray
+          key={this.state.type}
+          label={this.getTrayLabel()}
+          size="small"
+          open={this.state.isTrayOpen}
+          // We need to override closing trays
+          // so the tour can properly go through them
+          // without them unexpectedly closing.
+          onDismiss={this.state.overrideDismiss ? noop : this.closeTray}
+          shouldCloseOnDocumentClick
+          shouldContainFocus={!this.state.noFocus}
+          mountNode={getPortal()}
+          theme={{smallWidth: '28em'}}
+          onEntered={() => {
+            tourPubSub.publish('navigation-tray-opened', this.state.type)
+          }}
+        >
+          <div className={`navigation-tray-container ${this.state.type}-tray`}>
             <CloseButton placement="end" onClick={this.closeTray}>
               {I18n.t('Close')}
             </CloseButton>
@@ -351,7 +410,7 @@ export default class Navigation extends React.Component {
                     <Spinner
                       size="large"
                       margin="large auto"
-                      renderTitle={() => I18n.t('...Loading')}
+                      renderTitle={() => I18n.t('Loading')}
                     />
                   </View>
                 }
@@ -359,8 +418,8 @@ export default class Navigation extends React.Component {
                 {this.renderTrayContent()}
               </React.Suspense>
             </div>
-          </Tray>
-        )}
+          </div>
+        </Tray>
         {ENV.DIRECT_SHARE_ENABLED && ENV.current_user_id && (
           <UnreadComponent
             targetEl={

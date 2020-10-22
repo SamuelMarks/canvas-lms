@@ -138,7 +138,7 @@
 #
 class ProfileController < ApplicationController
   before_action :require_registered_user, :except => [:show, :settings, :communication, :communication_update]
-  before_action :require_user, :only => [:settings, :communication, :communication_update]
+  before_action :require_user, :only => [:settings, :communication, :communication_update, :qr_mobile_login]
   before_action :require_user_for_private_profile, :only => :show
   before_action :reject_student_view_student
   before_action :require_password_session, :only => [:communication, :communication_update, :update]
@@ -225,6 +225,19 @@ class ProfileController < ApplicationController
     @context = @user.profile
     set_active_tab 'notifications'
 
+    # Render updated UI if feature flag is enabled
+    if Account.site_admin.feature_enabled?(:notification_update_account_ui)
+      add_crumb(@current_user.short_name, profile_path)
+      add_crumb(t("Account Notification Settings"))
+      js_env NOTIFICATION_PREFERENCES_OPTIONS: {
+        deprecate_sms_enabled: !@domain_root_account.settings[:sms_allowed] && Account.site_admin.feature_enabled?(:deprecate_sms),
+        allowed_sms_categories: Notification.categories_to_send_in_sms(@domain_root_account),
+        send_scores_in_emails_text: Notification.where(category: 'Grading').first.related_user_setting(@user, @domain_root_account)
+      }
+      js_bundle :account_notification_settings_show
+      render html: '', layout: true
+      return
+    end
 
     # Get the list of Notification models (that are treated like categories) that make up the full list of Categories.
     full_category_list = Notification.dashboard_categories(@user)
@@ -242,6 +255,8 @@ class ProfileController < ApplicationController
       :channels => @user.communication_channels.all_ordered_for_display(@user).map { |c| communication_channel_json(c, @user, session) },
       :policies => NotificationPolicy.setup_with_default_policies(@user, full_category_list).map { |p| notification_policy_json(p, @user, session).tap { |json| json[:communication_channel_id] = p.communication_channel_id } },
       :categories => categories,
+      :deprecate_sms_enabled => !@domain_root_account.settings[:sms_allowed] && Account.site_admin.feature_enabled?(:deprecate_sms),
+      :allowed_sms_categories => Notification.categories_to_send_in_sms(@domain_root_account),
       :update_url => communication_update_profile_path,
       :show_observed_names => @user.observer_enrollments.any? || @user.as_observer_observation_links.any? ? @user.send_observed_names_in_notifications? : nil
       },
@@ -343,7 +358,7 @@ class ProfileController < ApplicationController
         user_params.delete(:short_name)
         user_params.delete(:sortable_name)
       end
-      if user_params[:pronouns].present? && @domain_root_account.pronouns.exclude?(user_params[:pronouns].strip)
+      if !@domain_root_account.can_change_pronouns? || user_params[:pronouns].present? && @domain_root_account.pronouns.exclude?(user_params[:pronouns].strip)
         user_params.delete(:pronouns)
       end
       if @user.update(user_params)
@@ -404,8 +419,11 @@ class ProfileController < ApplicationController
     @profile = @user.profile
     @context = @profile
 
+    if @domain_root_account.can_change_pronouns? && params[:pronouns].present? && @domain_root_account.pronouns.include?(params[:pronouns].strip)
+      @user.pronouns = params[:pronouns]
+    end
+
     short_name = params[:user] && params[:user][:short_name]
-    @user.pronouns = params[:pronouns] if params[:pronouns]
     @user.short_name = short_name if short_name && @user.user_can_edit_name?
     if params[:user_profile]
       user_profile_params = params[:user_profile].permit(:title, :bio)
@@ -417,9 +435,13 @@ class ProfileController < ApplicationController
       @profile.links = []
       params[:link_urls].zip(params[:link_titles]).
         reject { |url, title| url.blank? && title.blank? }.
-        each { |url, title|
-          @profile.links.build :url => url, :title => title
-        }
+        each do |url, title|
+          new_link = @profile.links.build :url => url, :title => title
+          # since every time we update links, we delete and recreate everything,
+          # deleting invalid link records will make sure the rest of the
+          # valid ones still save
+          new_link.delete unless new_link.valid?
+        end
     elsif params[:delete_links]
       @profile.links = []
     end
@@ -488,4 +510,27 @@ class ProfileController < ApplicationController
     })
     render :content_shares
   end
+
+  def qr_mobile_login
+    unless instructure_misc_plugin_available? && !!@domain_root_account&.mobile_qr_login_is_enabled?
+      head 404
+      return
+    end
+
+    @user ||= @current_user
+    set_active_tab 'qr_mobile_login'
+    @context = @user.profile if @user == @current_user
+
+    add_crumb(@user.short_name, profile_path)
+    add_crumb(t('crumbs.mobile_qr_login', "QR for Mobile Login"))
+
+    js_bundle :qr_mobile_login
+
+    render html: '', layout: true
+  end
 end
+
+def instructure_misc_plugin_available?
+  Object.const_defined?("InstructureMiscPlugin")
+end
+private :instructure_misc_plugin_available?

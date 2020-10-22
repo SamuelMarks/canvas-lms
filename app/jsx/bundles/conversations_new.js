@@ -370,6 +370,8 @@ const ConversationsRouter = Backbone.Router.extend({
       all: new CourseCollection(),
       groups: gc
     }
+
+    this.courses.all.setParam('per_page', '50')
     return this.courses.favorites.fetch()
   },
 

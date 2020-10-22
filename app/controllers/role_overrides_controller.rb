@@ -135,7 +135,7 @@ class RoleOverridesController < ApplicationController
       states = %w(active) if states.empty?
 
       roles = []
-      roles += Role.visible_built_in_roles if states.include?('active')
+      roles += Role.visible_built_in_roles(root_account_id: @context.resolved_root_account_id) if states.include?('active')
 
       scope = value_to_boolean(params[:show_inherited]) ? @context.available_custom_roles(true) : @context.roles
       roles += scope.where(:workflow_state => states).order(:id).to_a
@@ -281,6 +281,8 @@ class RoleOverridesController < ApplicationController
   #     manage_groups                    -- [ TAD ] Groups - add / edit / delete
   #     manage_interaction_alerts        -- [ Ta  ] Alerts - add / edit / delete
   #     manage_outcomes                  -- [sTaDo] Learning Outcomes - add / edit / delete
+  #     manage_proficiency_calculations  -- [ t d ] Outcome Proficiency Calculations - add / edit / delete
+  #     manage_proficiency_scales        -- [ t d ] Outcome Proficiency Scales - add / edit / delete
   #     manage_sections                  -- [ TaD ] Course Sections - add / edit / delete
   #     manage_students                  -- [ TAD ] Users - add / remove students in courses
   #     manage_user_notes                -- [ TA  ] Faculty Journal - manage entries
@@ -596,7 +598,8 @@ class RoleOverridesController < ApplicationController
     manageable_permissions.each do |permission_name, permission|
       grouped_permissions[permission_name] << {name: permission_name, disable_locking: permission.key?(:group)}
       if permission.key?(:group)
-        grouped_permissions[permission[:group]] << {name: permission_name, disable_locking: false}
+        current_override = context.role_overrides.where(:permission => permission_name, :role_id => role.id).first
+        grouped_permissions[permission[:group]] << {name: permission_name, disable_locking: false, currently: current_override&.enabled}
       end
     end
 
@@ -632,8 +635,9 @@ class RoleOverridesController < ApplicationController
         end
 
         target_permissions.each do |permission|
+          perm_override = value_to_boolean(permission_updates[:explicit]) && override.nil? ? permission[:currently] : override
           RoleOverride.manage_role_override(
-            context, role, permission[:name].to_s, override: override, locked: locked,
+            context, role, permission[:name].to_s, override: perm_override, locked: locked,
             applies_to_self: applies_to_self, applies_to_descendants: applies_to_descendants
           )
         end

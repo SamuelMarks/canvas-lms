@@ -754,9 +754,6 @@ describe Quizzes::QuizSubmission do
       end
 
       before(:each) do
-        @course.enable_feature!(:new_gradebook)
-        PostPolicy.enable_feature!
-
         student_in_course
       end
 
@@ -1833,6 +1830,14 @@ describe Quizzes::QuizSubmission do
       quiz_submission = Quizzes::SubmissionManager.new(quiz).find_or_create_submission(@student)
 
       expect(quiz_submission).to be_posted
+    end
+  end
+
+  context 'root_account_id' do
+    before(:each) { quiz_with_graded_submission([]) }
+
+    it "uses root_account value from account" do
+      expect(@quiz_submission.root_account_id).to eq Account.default.id
     end
   end
 end

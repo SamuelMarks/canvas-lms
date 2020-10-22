@@ -77,20 +77,6 @@ describe Pseudonym do
     Pseudonym.create!(:unique_id => 'cody@instructure.com', :user => u)
   end
 
-  it "should share a root_account_id with its account" do
-    pseudonym = Pseudonym.new
-    allow(pseudonym).to receive(:account).and_return(double(root_account_id: 1, id: 2))
-
-    expect(pseudonym.root_account_id).to eq 1
-  end
-
-  it "should use its account_id as a root_account_id if its account has no root" do
-    pseudonym = Pseudonym.new
-    allow(pseudonym).to receive(:account).and_return(double(root_account_id: nil, id: 1))
-
-    expect(pseudonym.root_account_id).to eq 1
-  end
-
   it "should find the correct pseudonym for logins" do
     user = User.create!
     p1 = Pseudonym.create!(:unique_id => 'Cody@instructure.com', :user => user)
@@ -353,6 +339,13 @@ describe Pseudonym do
         expect(Pseudonym).to receive(:active).twice.and_return(Pseudonym.none)
         allow(GlobalLookups).to receive(:enabled?).and_return(true)
         Pseudonym.authenticate({ unique_id: 'abc', password: 'def' }, [Account.default.id, account2])
+      end
+
+      it "won't attempt silly queries" do
+        wat = " " * 3000
+        unique_id = "asdf#{wat}asdf"
+        creds = { unique_id: unique_id, password: 'foobar' }
+        expect(Pseudonym.authenticate(creds, [Account.default.id])).to eq(:impossible_credentials)
       end
     end
   end
@@ -703,6 +696,13 @@ describe Pseudonym do
       expect(Pseudonym).to receive(:associated_shards).and_raise("an error")
       expect(Pseudonym.find_all_by_arbitrary_credentials({ unique_id: 'a', password: 'abcdefgh' },
         [Account.default.id], '127.0.0.1')).to eq [p]
+    end
+
+    it "throws an error if your credentials are absurd" do
+      wat = " " * 3000
+      unique_id = "asdf#{wat}asdf"
+      creds = { unique_id: unique_id, password: 'foobar' }
+      expect{ Pseudonym.find_all_by_arbitrary_credentials(creds, [Account.default.id], '127.0.0.1') }.to raise_error(ImpossibleCredentialsError)
     end
   end
 end

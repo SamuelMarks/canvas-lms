@@ -21,6 +21,7 @@ import {scaleForHeight, scaleForWidth} from '../shared/DimensionUtils'
 
 export const MIN_HEIGHT = 10
 export const MIN_WIDTH = 10
+export const MIN_WIDTH_VIDEO = 320
 
 export const SMALL = 'small'
 export const MEDIUM = 'medium'
@@ -30,7 +31,6 @@ export const CUSTOM = 'custom'
 
 export const imageSizes = [SMALL, MEDIUM, LARGE, EXTRA_LARGE, CUSTOM]
 export const videoSizes = [MEDIUM, LARGE, EXTRA_LARGE, CUSTOM]
-export const defaultImageSize = 320
 
 const sizeByMaximumDimension = {
   200: SMALL,
@@ -64,7 +64,9 @@ export function fromImageEmbed($element) {
     altText,
     appliedHeight: parsedOrNull($element, 'height'),
     appliedWidth: parsedOrNull($element, 'width'),
-    isDecorativeImage: altText === '' && $element.getAttribute('data-is-decorative') === 'true',
+    isDecorativeImage:
+      $element.getAttribute('data-is-decorative') === 'true' ||
+      $element.getAttribute('role') === 'presentation',
     naturalHeight: $element.naturalHeight,
     naturalWidth: $element.naturalWidth,
     url: $element.src
@@ -79,11 +81,16 @@ export function fromVideoEmbed($element) {
   // $element will be the <span> tinymce wraps around the iframe
   // that's hosting the video player
   let $videoElem = null
+  let $videoDoc
   let naturalWidth, naturalHeight
-  if ($element.firstElementChild.tagName === 'IFRAME') {
-    const videoDoc = $element.firstElementChild.contentDocument
-    if (videoDoc) {
-      $videoElem = videoDoc.querySelector('video')
+
+  const $videoIframe = $element.tagName === 'IFRAME' ? $element : $element.firstElementChild
+  const $tinymceIframeShim = $videoIframe.parentElement
+
+  if ($videoIframe.tagName === 'IFRAME') {
+    $videoDoc = $videoIframe.contentDocument
+    if ($videoDoc) {
+      $videoElem = $videoDoc.querySelector('video')
     }
     if ($videoElem && ($videoElem.loadedmetadata || $videoElem.readyState >= 1)) {
       naturalWidth = $videoElem.videoWidth
@@ -94,8 +101,8 @@ export function fromVideoEmbed($element) {
   // because tinymce doesn't put the title attribute on the iframe,
   // but maintains it on the span it adds around it.
   const title = (
-    $element.firstElementChild.getAttribute('title') ||
-    $element.getAttribute('data-mce-p-title') ||
+    $videoIframe.getAttribute('title') ||
+    $tinymceIframeShim.getAttribute('data-mce-p-title') ||
     ''
   ).replace(formatMessage('Video player for '), '')
   const rect = $element.getBoundingClientRect()
@@ -106,6 +113,15 @@ export function fromVideoEmbed($element) {
     naturalHeight,
     naturalWidth,
     source: $videoElem && $videoElem.querySelector('source')
+  }
+
+  try {
+    const trackjson = $videoDoc.querySelector('[data-tracks]')?.getAttribute('data-tracks')
+    if (trackjson) {
+      videoOptions.tracks = JSON.parse(trackjson)
+    }
+  } catch (_ignore) {
+    // bad json?
   }
 
   videoOptions.videoSize = imageSizeFromKnownOptions(videoOptions)

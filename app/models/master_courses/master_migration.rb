@@ -16,10 +16,30 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
 class MasterCourses::MasterMigration < ActiveRecord::Base
+  # represents and handles a blueprint sync event
+  # a sync is considered successful when all associated courses have the same data
+  # (barring any "exceptions" i.e. modifications on the associated course that we'll leave alone)
+
+  # back in ye olden day this would have involved copying the entire course and re-importing it everywhere
+  # which obviously would (and did) take forever
+  # so our semi-clever solution is to tell the exporter to only export content from the blueprint (:selective export)
+  # that may have changed since the last sync
+
+  # of course that doesn't really help much if you just added a new associated course that wasn't around for the last sync
+  # so syncs will try to bring those up-to-date separately by exporting the entire course just for those new associations (:full exports)
+
+  # once the exports are generated, we'll queue a bunch of jobs to import the exported content into
+  # all the associated courses in parallel
+  # and eventually the last import job will mark the sync as complete or failed
+
   belongs_to :master_template, :class_name => "MasterCourses::MasterTemplate"
+  belongs_to :root_account, :class_name => 'Account'
   belongs_to :user
 
+  # keeps track of the import status for all associated courses
   has_many :migration_results, :class_name => "MasterCourses::MigrationResult"
+
+  before_create :set_root_account_id
 
   serialize :export_results, Hash
   serialize :migration_settings, Hash
@@ -65,6 +85,10 @@ class MasterCourses::MasterMigration < ActiveRecord::Base
 
   def copy_settings=(val)
     self.migration_settings[:copy_settings] = val
+  end
+
+  def publish_after_initial_sync=(val)
+    self.migration_settings[:publish_after_initial_sync] = val
   end
 
   def hours_until_expire
@@ -262,7 +286,9 @@ class MasterCourses::MasterMigration < ActiveRecord::Base
       cm.migration_settings[:hide_from_index] = true # we may decide we want to show this after all, but hide them for now
       cm.migration_settings[:master_course_export_id] = export.id
       cm.migration_settings[:master_migration_id] = self.id
+      cm.migration_settings[:publish_after_completion] = type == :full && self.migration_settings[:publish_after_initial_sync]
       cm.child_subscription_id = sub.id
+      cm.source_course_id = self.master_template.course_id # apparently this is how some lti tools try to track copied content :/
       cm.workflow_state = 'exported'
       cm.exported_attachment = export.attachment
       cm.user_id = export.user_id
@@ -320,5 +346,8 @@ class MasterCourses::MasterMigration < ActiveRecord::Base
     "!/blueprint/blueprint_templates/#{master_template_id}/#{id}"
   end
 
-end
+  def set_root_account_id
+    self.root_account_id = self.master_template.root_account_id
+  end
 
+end

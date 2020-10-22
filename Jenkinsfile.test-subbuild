@@ -18,32 +18,20 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-def getImageTagVersion() {
-  def flags = load 'build/new-jenkins/groovy/commit-flags.groovy'
-  return flags.getImageTagVersion()
-}
+library "canvas-builds-library"
 
 pipeline {
   agent { label 'canvas-docker' }
   options {
     ansiColor('xterm')
-  }
-
-  environment {
-    COMPOSE_FILE = 'docker-compose.new-jenkins-web.yml'
-    GERRIT_PROJECT = 'canvas-lms'
-    GERRIT_PORT = '29418'
-    GERRIT_URL = "$GERRIT_HOST:$GERRIT_PORT"
-
-    NAME = getImageTagVersion()
-    PATCHSET_TAG = "$DOCKER_REGISTRY_FQDN/jenkins/canvas-lms:$NAME"
+    timestamps()
   }
 
   stages {
     stage('Print Env Variables') {
       steps {
         timeout(time: 20, unit: 'SECONDS') {
-          sh 'build/new-jenkins/print-env-excluding-secrets.sh'
+          cleanAndSetup()
         }
       }
     }

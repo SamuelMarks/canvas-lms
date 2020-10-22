@@ -1,4 +1,4 @@
-version: "2.1"
+version: "2.3"
 services:
   karma:
     environment:
@@ -7,4 +7,5 @@ services:
       context: .
       dockerfile: ./build/new-jenkins/js/Dockerfile-karma
       args:
-        image_name: $PATCHSET_TAG
+        PATCHSET_TAG: $PATCHSET_TAG
+    init: true

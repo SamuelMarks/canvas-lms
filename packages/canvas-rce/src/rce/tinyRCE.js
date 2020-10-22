@@ -21,6 +21,9 @@ import tinymce from 'tinymce/tinymce'
 
 // load theme
 import 'tinymce/themes/silver/theme'
+// since tinymce 5.3, default icons are loaded dynamically, but
+// w/o importing, webpack doesn't have them
+import 'tinymce/icons/default'
 
 // add tinymc plugins
 import 'tinymce/plugins/autolink/plugin'
@@ -33,6 +36,8 @@ import 'tinymce/plugins/lists/plugin'
 import 'tinymce/plugins/wordcount/plugin'
 import 'tinymce/plugins/paste/plugin'
 import 'tinymce/plugins/table/plugin'
+import 'tinymce/plugins/hr/plugin'
+import 'tinymce/plugins/fullscreen/plugin'
 
 // add custom plugins
 import './plugins/instructure-ui-icons/plugin'
@@ -43,6 +48,8 @@ import './plugins/instructure_external_tools/plugin'
 import './plugins/instructure_record/plugin'
 import './plugins/instructure_links/plugin'
 import './plugins/instructure_documents/plugin'
+import './plugins/instructure_html_view/plugin'
+import './plugins/instructure_media_embed/plugin'
 
 // prevent tinymce from loading language scripts with explicit
 // language_url of 'none'

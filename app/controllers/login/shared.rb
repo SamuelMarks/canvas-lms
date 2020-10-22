@@ -16,6 +16,8 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
 module Login::Shared
+  include FullStoryHelper
+
   def reset_session_for_login
     reset_session_saving_keys(:return_to,
                               :oauth,
@@ -51,9 +53,17 @@ module Login::Shared
     # there
     session.delete(:shown_instfs_pixel)
 
-    if pseudonym.account_id != (@real_domain_root_account || @domain_root_account).id
+    if pseudonym.account_id != @domain_root_account.id
+      # they have no reason to be at this account; send them to where they belong
+      if (session[:return_to].blank? || session[:return_to] == '/') &&
+        session[:oauth2].blank? &&
+        @domain_root_account.user_account_associations.where(user_id: pseudonym.user_id).none? &&
+        !@domain_root_account.grants_right?(user, :read)
+        return redirect_to dashboard_url(host: HostUrl.context_host(pseudonym.account, request.host_with_port), cross_domain_login: request.host_with_port)
+      end
+
       flash[:notice] = t("You are logged in at %{institution1} using your credentials from %{institution2}",
-                         institution1: (@real_domain_root_account || @domain_root_account).name,
+                         institution1: @domain_root_account.name,
                          institution2: pseudonym.account.name)
     end
 
@@ -67,6 +77,8 @@ module Login::Shared
     end
     session[:require_terms] = true if @domain_root_account.require_acceptance_of_terms?(user)
     @current_user = user
+
+    fullstory_init(@domain_root_account, session)
 
     respond_to do |format|
       if (oauth = session[:oauth2])
@@ -88,7 +100,7 @@ module Login::Shared
         # assumed that if that URL is found rather than using the default,
         # they must have cookies enabled and we don't need to worry about
         # adding the :login_success param to it.
-        format.html { redirect_back_or_default(dashboard_url(:login_success => '1')) }
+        format.html { redirect_to delegated_auth_redirect_uri(redirect_back_or_default(dashboard_url(:login_success => '1'))) }
       end
       format.json { render :json => pseudonym.as_json(:methods => :user_code), :status => :ok }
     end

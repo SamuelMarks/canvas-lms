@@ -21,6 +21,9 @@ require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 require 'nokogiri'
 
 describe ExternalToolsController, type: :request do
+  before(:once) do
+    Account.default.enable_feature!(:submission_type_tool_placement)
+  end
 
   describe "in a course" do
     before(:once) do
@@ -336,6 +339,147 @@ describe ExternalToolsController, type: :request do
     end
   end
 
+  context "rce favoriting" do
+    def create_editor_tool(account)
+      ContextExternalTool.create!(
+        context: account,
+        consumer_key: 'key',
+        shared_secret: 'secret',
+        name: 'test tool',
+        url: 'http://www.tool.com/launch',
+        editor_button: {url: 'http://example.com', icon_url: 'http://example.com'}
+      )
+    end
+
+    describe "#add_rce_favorite" do
+      before :once do
+        @root_tool = create_editor_tool(Account.default)
+        @sub_account = Account.default.sub_accounts.create!
+        @sub_tool = create_editor_tool(@sub_account)
+        account_admin_user(:active_all => true)
+      end
+
+      def add_favorite_tool(account, tool)
+        json = api_call(:post, "/api/v1/accounts/#{account.id}/external_tools/rce_favorites/#{tool.id}",
+          {:controller => 'external_tools', :action => 'add_rce_favorite', :format => 'json',
+            :account_id => account.id.to_s, :id => tool.id.to_s}, {}, {}, {expected_status: 200})
+        account.reload
+        json
+      end
+
+      it "requires authorization" do
+        student_in_course(:active_all => true)
+        @user = @student
+        api_call(:post, "/api/v1/accounts/#{Account.default.id}/external_tools/rce_favorites/#{@root_tool.id}",
+          {:controller => 'external_tools', :action => 'add_rce_favorite', :format => 'json',
+            :account_id => Account.default.id.to_s, :id => @root_tool.id.to_s}, {}, {}, {:expected_status => 401})
+      end
+
+      it "requires a tool in the context" do
+        api_call(:post, "/api/v1/accounts/#{Account.default.id}/external_tools/rce_favorites/#{@sub_tool.id}",
+          {:controller => 'external_tools', :action => 'add_rce_favorite', :format => 'json',
+            :account_id => Account.default.id.to_s, :id => @sub_tool.id.to_s}, {}, {}, {:expected_status => 404})
+      end
+
+      it "doesn't allow adding too many tools" do
+        tool2 = create_editor_tool(Account.default)
+        tool3 = create_editor_tool(Account.default)
+        Account.default.tap do |ra|
+          ra.settings[:rce_favorite_tool_ids] = {value: [tool2.global_id, tool3.global_id]}
+          ra.save!
+        end
+
+        json = api_call(:post, "/api/v1/accounts/#{Account.default.id}/external_tools/rce_favorites/#{@root_tool.id}",
+          {:controller => 'external_tools', :action => 'add_rce_favorite', :format => 'json',
+            :account_id => Account.default.id.to_s, :id => @root_tool.id.to_s}, {}, {}, {:expected_status => 400})
+        expect(json['message']).to eq "Cannot have more than 2 favorited tools"
+      end
+
+      it "handles adding a favorite after a previous tool is deleted" do
+        tool2 = create_editor_tool(Account.default)
+        tool3 = create_editor_tool(Account.default)
+        Account.default.tap do |ra|
+          ra.settings[:rce_favorite_tool_ids] = {value: [tool2.global_id, tool3.global_id]}
+          ra.save!
+        end
+        tool3.destroy
+
+        add_favorite_tool(Account.default, @root_tool) # can add it now because the other reference is invalid
+      end
+
+      it "adds to existing favorites configured with old column if not specified on account" do
+        @root_tool.update_attribute(:is_rce_favorite, true)
+        tool2 = create_editor_tool(Account.default)
+        add_favorite_tool(Account.default, tool2)
+        expect(@root_tool.is_rce_favorite_in_context?(Account.default)).to eq true
+        expect(tool2.is_rce_favorite_in_context?(Account.default)).to eq true
+      end
+
+      it "can add a root account tool as a favorite for a sub-account" do
+        add_favorite_tool(@sub_account, @root_tool)
+        expect(@root_tool.is_rce_favorite_in_context?(@sub_account)).to eq true
+        expect(@root_tool.is_rce_favorite_in_context?(Account.default)).to eq false # didn't affect parent account
+      end
+
+      it "can add a sub-account tool as a favorite for a sub-account" do
+        add_favorite_tool(@sub_account, @root_tool)
+        expect(@root_tool.is_rce_favorite_in_context?(@sub_account)).to eq true
+        expect(@root_tool.is_rce_favorite_in_context?(Account.default)).to eq false # didn't affect parent account
+      end
+
+      it "adds to existing favorites for a sub-account inherited from a root account" do
+        add_favorite_tool(Account.default, @root_tool)
+        add_favorite_tool(@sub_account, @sub_tool)
+
+        expect(@root_tool.is_rce_favorite_in_context?(@sub_account)).to eq true # now saved directly on sub-account
+        expect(@sub_tool.is_rce_favorite_in_context?(@sub_account)).to eq true
+      end
+    end
+
+    describe "#remove_rce_favorite" do
+      before :once do
+        @root_tool = create_editor_tool(Account.default)
+        @sub_account = Account.default.sub_accounts.create!
+        @sub_tool = create_editor_tool(@sub_account)
+        account_admin_user(:active_all => true)
+      end
+
+      def remove_favorite_tool(account, tool)
+        json = api_call(:delete, "/api/v1/accounts/#{account.id}/external_tools/rce_favorites/#{tool.id}",
+          {:controller => 'external_tools', :action => 'remove_rce_favorite', :format => 'json',
+            :account_id => account.id.to_s, :id => tool.id.to_s}, {}, {}, {expected_status: 200})
+        account.reload
+        json
+      end
+
+      it "requires authorization" do
+        student_in_course(:active_all => true)
+        @user = @student
+        api_call(:delete, "/api/v1/accounts/#{Account.default.id}/external_tools/rce_favorites/#{@root_tool.id}",
+          {:controller => 'external_tools', :action => 'remove_rce_favorite', :format => 'json',
+            :account_id => Account.default.id.to_s, :id => @root_tool.id.to_s}, {}, {}, {:expected_status => 401})
+      end
+
+      it "works with existing favorites configured with old column if not specified on account" do
+        @root_tool.update_attribute(:is_rce_favorite, true)
+        tool2 = create_editor_tool(Account.default)
+        tool2.update_attribute(:is_rce_favorite, true)
+        remove_favorite_tool(Account.default, @root_tool)
+        expect(Account.default.reload.settings[:rce_favorite_tool_ids][:value]).to eq [tool2.global_id] # saves it onto the account
+      end
+
+      it "removes from sub-account favorites inherited from a root account" do
+        root_tool2 = create_editor_tool(Account.default)
+        Account.default.tap do |ra|
+          ra.settings[:rce_favorite_tool_ids] = {value: [@root_tool.global_id, root_tool2.global_id]}
+          ra.save!
+        end
+
+        remove_favorite_tool(@sub_account, @root_tool)
+        expect(@sub_account.settings[:rce_favorite_tool_ids][:value]).to eq [root_tool2.global_id]
+      end
+    end
+  end
 
   def show_call(context, type="course")
     et = tool_with_everything(context)
@@ -553,6 +697,7 @@ describe ExternalToolsController, type: :request do
     et.module_group_menu = {:url=>"http://www.example.com/ims/lti/resource", :text => "modules group menu", display_type: 'full_width', visibility: 'admins'}
     et.quiz_menu = {:url=>"http://www.example.com/ims/lti/resource", :text => "quiz menu", display_type: 'full_width', visibility: 'admins'}
     et.quiz_index_menu = {:url=>"http://www.example.com/ims/lti/resource", :text => "quiz index menu", display_type: 'full_width', visibility: 'admins'}
+    et.submission_type_selection = {:url=>"http://www.example.com/ims/lti/resource", :text => "submission type selection", display_type: 'full_width', visibility: 'admins'}
     et.wiki_page_menu = {:url=>"http://www.example.com/ims/lti/resource", :text => "wiki page menu", display_type: 'full_width', visibility: 'admins'}
     et.wiki_index_menu = {:url=>"http://www.example.com/ims/lti/resource", :text => "wiki index menu", display_type: 'full_width', visibility: 'admins'}
     et.student_context_card = {:url=>"http://www.example.com/ims/lti/resource", :text => "context card link", display_type: 'full_width', visibility: 'admins'}
@@ -561,6 +706,7 @@ describe ExternalToolsController, type: :request do
     end
     et.context_external_tool_placements.new(:placement_type => opts[:placement]) if opts[:placement]
     et.allow_membership_service_access = opts[:allow_membership_service_access] if opts[:allow_membership_service_access]
+    et.conference_selection = {:url=>"http://www.example.com/ims/lti/conference", :icon_url=>"/images/delete.png", :text=>"conference selection"}
     et.save!
     et
   end
@@ -612,229 +758,274 @@ describe ExternalToolsController, type: :request do
   end
 
   def example_json(et=nil)
-    {"name"=>"External Tool Eh",
-     "created_at"=>et ? et.created_at.as_json : "",
-     "updated_at"=>et ? et.updated_at.as_json : "",
-     "consumer_key"=>"oi",
-     "domain"=>nil,
-     "url"=>"http://www.example.com/ims/lti",
-     "tool_configuration"=>nil,
-     "id"=>et ? et.id : nil,
-     "not_selectable"=> et ? et.not_selectable : nil,
-     "workflow_state"=>"public",
-     "vendor_help_link"=>nil,
-     "version"=>"1.1",
-     "resource_selection"=>
-             {"text"=>"",
-              "url"=>"http://www.example.com/ims/lti/resource",
-              "selection_height"=>50,
-              "selection_width"=>50,
-              "label"=>""},
-     "privacy_level"=>"public",
-     "editor_button"=>
-             {"icon_url"=>"/images/delete.png",
-              "text"=>"editor button",
-              "url"=>"http://www.example.com/ims/lti/editor",
-              "selection_height"=>50,
-              "selection_width"=>50,
-              "label"=>"editor button"},
-     "homework_submission"=>
-             {"text"=>"homework submission",
-              "url"=>"http://www.example.com/ims/lti/editor",
-              "selection_height"=>50,
-              "selection_width"=>50,
-              "label"=>"homework submission"},
-     "custom_fields"=>{"key1"=>"val1", "key2"=>"val2"},
-     "description"=>"For testing stuff",
-     "user_navigation"=>
-             {"text"=>"User nav",
-              "url"=>"http://www.example.com/ims/lti/user",
-              "label"=>"User nav",
-              "selection_height"=>400,
-              "selection_width"=>800},
-     "course_navigation" =>
-             {"text"=>"Course nav",
-              "url"=>"http://www.example.com/ims/lti/course",
-              "visibility"=>"admins",
-              "default"=> "disabled",
-              "label"=>"Course nav",
-              "selection_height"=>400,
-              "selection_width"=>800},
-     "account_navigation"=>
-             {"text"=>"Account nav",
-              "url"=>"http://www.example.com/ims/lti/account",
-              "custom_fields"=>{"key"=>"value"},
-              "label"=>"Account nav",
-              "selection_height"=>400,
-              "selection_width"=>800},
-     "migration_selection"=>
-             {"text"=>"migration selection",
-              "label"=>"migration selection",
-              "url"=>"http://www.example.com/ims/lti/resource",
-              "selection_height"=>24,
-              "selection_width"=>42},
-     "course_home_sub_navigation"=>
-             {"text"=>"course home sub navigation",
-              "label"=>"course home sub navigation",
-              "url"=>"http://www.example.com/ims/lti/resource",
-              "visibility"=>'admins',
-              "display_type"=>'full_width',
-              "selection_height"=>400,
-              "selection_width"=>800},
-     "course_settings_sub_navigation"=>
-             {"text"=>"course settings sub navigation",
-              "label"=>"course settings sub navigation",
-              "url"=>"http://www.example.com/ims/lti/resource",
-              "visibility"=>'admins',
-              "display_type"=>'full_width',
-              "selection_height"=>400,
-              "selection_width"=>800},
-     "global_navigation"=>
-         {"text"=>"global navigation",
-          "label"=>"global navigation",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-     "assignment_menu"=>
-         {"text"=>"assignment menu",
-          "label"=>"assignment menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-      "assignment_index_menu"=>
-        {"text"=>"assignment index menu",
-          "label"=>"assignment index menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-      "assignment_group_menu"=>
-        {"text"=>"assignment group menu",
-          "label"=>"assignment group menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-     "discussion_topic_menu"=>
-         {"text"=>"discussion topic menu",
-          "label"=>"discussion topic menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-      "discussion_topic_index_menu"=>
-        {"text"=>"discussion topic index menu",
-          "label"=>"discussion topic index menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-     "file_menu"=>
-         {"text"=>"file menu",
-          "label"=>"file menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-      "file_index_menu"=>
-        {"text"=>"file index menu",
-          "label"=>"file index menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-     "module_menu"=>
-         {"text"=>"module menu",
-          "label"=>"module menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-    "module_index_menu"=>
-        {"text"=>"modules index menu",
-          "label"=>"modules index menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-    "module_group_menu"=>
-        {"text"=>"modules group menu",
-          "label"=>"modules group menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-     "quiz_menu"=>
-        {"text"=>"quiz menu",
-          "label"=>"quiz menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-    "quiz_index_menu"=>
-        {"text"=>"quiz index menu",
-          "label"=>"quiz index menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-     "wiki_page_menu"=>
-         {"text"=>"wiki page menu",
-          "label"=>"wiki page menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-      "student_context_card"=>
-        {"text"=>"context card link",
-          "label"=>"context card link",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-      "wiki_index_menu"=>
-        {"text"=>"wiki index menu",
-          "label"=>"wiki index menu",
-          "url"=>"http://www.example.com/ims/lti/resource",
-          "visibility"=>'admins',
-          "display_type"=>'full_width',
-          "selection_height"=>400,
-          "selection_width"=>800},
-     "link_selection"=>nil,
-     "assignment_selection"=>nil,
-     "post_grades"=>nil,
-     "collaboration"=>nil,
-     "similarity_detection"=>nil,
-     "assignment_edit"=>nil,
-     "assignment_view"=>nil,
-     "course_assignments_menu" => begin
-       if et && et.course_assignments_menu
-         {
-           "text" => "course assignments menu",
-           "url" => "http://www.example.com/ims/lti/resource",
-           "label" => "course assignments menu",
-           "selection_width" => 800,
-           "selection_height" => 400
-         }
-       end
-     end
+    example = {
+      "name"=>"External Tool Eh",
+      "created_at"=>et ? et.created_at.as_json : "",
+      "updated_at"=>et ? et.updated_at.as_json : "",
+      "consumer_key"=>"oi",
+      "domain"=>nil,
+      "url"=>"http://www.example.com/ims/lti",
+      "tool_configuration"=>nil,
+      "id"=>et ? et.id : nil,
+      "not_selectable"=> et ? et.not_selectable : nil,
+      "workflow_state"=>"public",
+      "vendor_help_link"=>nil,
+      "version"=>"1.1",
+      "resource_selection"=> {
+        "text"=>"",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "selection_height"=>50,
+        "selection_width"=>50,
+        "label"=>""
+      },
+      "privacy_level"=>"public",
+      "editor_button"=> {
+        "icon_url"=>"/images/delete.png",
+        "text"=>"editor button",
+        "url"=>"http://www.example.com/ims/lti/editor",
+        "selection_height"=>50,
+        "selection_width"=>50,
+        "label"=>"editor button"
+      },
+      "homework_submission"=> {
+        "text"=>"homework submission",
+        "url"=>"http://www.example.com/ims/lti/editor",
+        "selection_height"=>50,
+        "selection_width"=>50,
+        "label"=>"homework submission"
+      },
+      "custom_fields"=>{"key1"=>"val1", "key2"=>"val2"},
+      "description"=>"For testing stuff",
+      "user_navigation"=> {
+        "text"=>"User nav",
+        "url"=>"http://www.example.com/ims/lti/user",
+        "label"=>"User nav",
+        "selection_height"=>400,
+        "selection_width"=>800
+      },
+      "course_navigation" => {
+        "text"=>"Course nav",
+        "url"=>"http://www.example.com/ims/lti/course",
+        "visibility"=>"admins",
+        "default"=> "disabled",
+        "label"=>"Course nav",
+        "selection_height"=>400,
+        "selection_width"=>800
+      },
+      "account_navigation"=> {
+        "text"=>"Account nav",
+        "url"=>"http://www.example.com/ims/lti/account",
+        "custom_fields"=>{"key"=>"value"},
+        "label"=>"Account nav",
+        "selection_height"=>400,
+        "selection_width"=>800
+      },
+      "migration_selection"=> {
+        "text"=>"migration selection",
+        "label"=>"migration selection",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "selection_height"=>24,
+        "selection_width"=>42
+      },
+      "course_home_sub_navigation"=> {
+        "text"=>"course home sub navigation",
+        "label"=>"course home sub navigation",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "course_settings_sub_navigation"=> {
+        "text"=>"course settings sub navigation",
+        "label"=>"course settings sub navigation",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "global_navigation"=> {
+        "text"=>"global navigation",
+        "label"=>"global navigation",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "assignment_menu"=> {
+        "text"=>"assignment menu",
+        "label"=>"assignment menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+        "assignment_index_menu"=> {
+      "text"=>"assignment index menu",
+        "label"=>"assignment index menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+        "assignment_group_menu"=> {
+      "text"=>"assignment group menu",
+        "label"=>"assignment group menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "discussion_topic_menu"=> {
+        "text"=>"discussion topic menu",
+        "label"=>"discussion topic menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+        "discussion_topic_index_menu"=> {
+      "text"=>"discussion topic index menu",
+        "label"=>"discussion topic index menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "file_menu"=> {
+        "text"=>"file menu",
+        "label"=>"file menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+        "file_index_menu"=> {
+        "text"=>"file index menu",
+        "label"=>"file index menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "module_menu"=> {
+        "text"=>"module menu",
+        "label"=>"module menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "module_index_menu"=> {
+        "text"=>"modules index menu",
+        "label"=>"modules index menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "module_group_menu"=> {
+        "text"=>"modules group menu",
+        "label"=>"modules group menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "quiz_menu"=> {
+        "text"=>"quiz menu",
+        "label"=>"quiz menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "quiz_index_menu"=> {
+        "text"=>"quiz index menu",
+        "label"=>"quiz index menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "submission_type_selection"=> {
+        "text"=>"submission type selection",
+        "label"=>"submission type selection",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "wiki_page_menu"=> {
+        "text"=>"wiki page menu",
+        "label"=>"wiki page menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "student_context_card"=> {
+        "text"=>"context card link",
+        "label"=>"context card link",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "wiki_index_menu"=> {
+        "text"=>"wiki index menu",
+        "label"=>"wiki index menu",
+        "url"=>"http://www.example.com/ims/lti/resource",
+        "visibility"=>'admins',
+        "display_type"=>'full_width',
+        "selection_height"=>400,
+        "selection_width"=>800,
+      },
+      "link_selection"=>nil,
+      "assignment_selection"=>nil,
+      "post_grades"=>nil,
+      "collaboration"=>nil,
+      "similarity_detection"=>nil,
+      "assignment_edit"=>nil,
+      "assignment_view"=>nil,
+      # Add when conference_selection_lti_placement FF removed
+      #  "conference_selection"=>
+      #   {"icon_url"=>"/images/delete.png",
+      #     "text"=>"conference selection",
+      #     "url"=>"http://www.example.com/ims/lti/conference",
+      #     "label"=>"conference selection",
+      #     "selection_height"=>400,
+      #     "selection_width"=>800},
+      "course_assignments_menu" => begin
+        if et && et.course_assignments_menu
+          {
+            "text" => "course assignments menu",
+            "url" => "http://www.example.com/ims/lti/resource",
+            "label" => "course assignments menu",
+            "selection_width" => 800,
+            "selection_height" => 400
+          }
+        end
+      end,
     }
+    example["is_rce_favorite"] = et.is_rce_favorite if et && et.can_be_rce_favorite?
+    example
   end
 end

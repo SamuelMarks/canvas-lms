@@ -213,11 +213,8 @@ module Api::V1::OutcomeResults
   end
 
   def outcome_results_rollups_csv(current_user, context, rollups, outcomes, outcome_paths)
-    options = {}
-    if context.root_account.feature_enabled?(:enable_i18n_features_in_outcomes_exports)
-      options = CsvWithI18n.csv_i18n_settings(current_user)
-    end
-    CsvWithI18n.generate(options) do |csv|
+    options = CsvWithI18n.csv_i18n_settings(current_user)
+    CsvWithI18n.generate(**options) do |csv|
       row = []
       row << I18n.t(:student_name, 'Student name')
       row << I18n.t(:student_id, 'Student ID')
@@ -228,13 +225,13 @@ module Api::V1::OutcomeResults
         row << I18n.t(:outcome_path_mastery_points, "%{path} mastery points", :path => path)
       end
       csv << row
+      mastery_points = @context.root_account.feature_enabled?(:account_level_mastery_scales) && @context.resolved_outcome_proficiency&.mastery_points
       rollups.each do |rollup|
         row = [rollup.context.name, rollup.context.id]
         outcomes.each do |outcome|
           score = rollup.scores.find{|x| x.outcome == outcome}
-          criterion = outcome.data && outcome.data[:rubric_criterion]
           row << (score ? score.score : nil)
-          row << (criterion ? criterion[:mastery_points] : nil)
+          row << (mastery_points || outcome&.data&.dig(:rubric_criterion, :mastery_points))
         end
         csv << row
       end

@@ -30,6 +30,7 @@ export default class IndexMenu extends React.Component {
     store: PropTypes.object.isRequired,
     contextType: PropTypes.string.isRequired,
     contextId: PropTypes.number.isRequired,
+    requestBulkEdit: PropTypes.func, // not required. no menu item if not specified
     setTrigger: PropTypes.func.isRequired,
     setDisableTrigger: PropTypes.func.isRequired,
     registerWeightToggle: PropTypes.func.isRequired,
@@ -42,7 +43,7 @@ export default class IndexMenu extends React.Component {
 
   state = this.props.store.getState()
 
-  componentWillMount() {
+  UNSAFE_componentWillMount() {
     this.setState(this.props.store.getState())
   }
 
@@ -93,12 +94,10 @@ export default class IndexMenu extends React.Component {
     if (this.props.hasAssignments && this.props.postToSisDefault) {
       return (
         <li role="menuitem">
-          <a
+          <button
             ref={node => {
               this.disableTrigger = node
             }}
-            href="#"
-            role="button"
             id="assignmentDisableSyncCog"
             title={I18n.t('Disable Sync to %{name}', {name: this.props.sisName})}
             aria-label={I18n.t('Disable Sync to %{name}', {name: this.props.sisName})}
@@ -109,7 +108,7 @@ export default class IndexMenu extends React.Component {
             }}
           >
             {I18n.t('Disable Sync to %{name}', {name: this.props.sisName})}
-          </a>
+          </button>
         </li>
       )
     }
@@ -190,18 +189,33 @@ export default class IndexMenu extends React.Component {
           this.node = node
         }}
       >
-        <a
-          className="al-trigger btn"
+        <button
+          className="al-trigger btn Button"
           id="course_assignment_settings_link"
-          role="button"
           tabIndex="0"
           title={I18n.t('Assignments Settings')}
           aria-label={I18n.t('Assignments Settings')}
         >
           <i className="icon-more" aria-hidden="true" />
           <span className="screenreader-only">{I18n.t('Assignment Options')}</span>
-        </a>
+        </button>
         <ul className="al-options" role="menu">
+          {this.props.requestBulkEdit && (
+            <li role="menuitem">
+              <a
+                href="#"
+                tabIndex="0"
+                id="requestBulkEditMenuItem"
+                className="requestBulkEditMenuItem"
+                role="button"
+                title={I18n.t('Edit Dates')}
+                onClick={this.props.requestBulkEdit}
+              >
+                <i className="icon-edit" />
+                {I18n.t('Edit Assignment Dates')}
+              </a>
+            </li>
+          )}
           <li role="menuitem">
             <a
               ref="trigger"

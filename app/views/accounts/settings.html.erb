@@ -59,6 +59,9 @@
     <% if can_do(@context, @current_user, :manage_account_settings) %>
     <li><a href="#tab-settings" id="tab-settings-link"><%= t(:tab_settings, "Settings") %></a></li>
     <% end %>
+    <% if can_do(@account, @current_user, :manage_privacy_settings) %>
+    <li><a href="#tab-privacy" id="tab-privacy-link"><%= t(:tab_privacy, "Privacy") %></a></li>
+    <% end %>
     <% if can_do(@context, @current_user, :manage_storage_quotas) %>
     <li><a href="#tab-quotas" id="tab-quotas-link"><%= t(:tab_quotas, "Quotas") %></a></li>
     <% end %>
@@ -96,7 +99,7 @@
       <%= form_for :account, :url => account_url(@account), :html => {:method => :put, :id => "account_settings", :class => 'account_settings'} do |f| %>
         <fieldset id="account_settings">
           <legend><%= t(:account_settings_title, "Account Settings") %></legend>
-          <table class="formtable">
+          <table class="formtable narrow">
             <tr>
               <td><%= f.blabel :name, :en => "Account Name" %></td>
               <td><%= f.text_field :name, :class => 'same-width-as-select' %></td>
@@ -139,10 +142,15 @@
                 <% if @account.grants_right?(@current_user, :manage_site_settings) %>
                   <tr>
                     <td><%= settings.blabel :mfa_settings, :en => "Multi-Factor Authentication" %></td>
-                    <td><%= settings.select :mfa_settings, [[t('select.mfa.disabled', "Disabled"), :disabled],
-                                                            [t('select.mfa.optional', "Optional"), :optional],
-                                                            [t('select.mfa.required_for_admins', "Required for Admins"), :required_for_admins],
-                                                            [t('select.mfa.required', "Required"), :required]], :selected => @account.mfa_settings %>
+                    <td>
+                      <%= settings.select :mfa_settings, [[t('select.mfa.disabled', "Disabled"), :disabled],
+                                                          [t('select.mfa.optional', "Optional"), :optional],
+                                                          [t('select.mfa.required_for_admins', "Required for Admins"), :required_for_admins],
+                                                          [t('select.mfa.required', "Required"), :required]], :selected => @account.mfa_settings %>
+                      <p>
+                        <%= settings.check_box :mobile_qr_login_is_enabled, checked: @account.mobile_qr_login_is_enabled? %>
+                        <%= settings.label :mobile_qr_login_is_enabled, en: "Allow logins to the mobile apps via the use of QR codes" %>
+                      </p>
                     </td>
                   </tr>
                 <% end %>
@@ -306,6 +314,18 @@
                   <% end %>
                 <% end %>
 
+                <% if @account.feature_allowed?(:rce_enhancements) %>
+                  <%= settings.fields_for :disable_rce_media_uploads do |r| %>
+                    <% hash = @account.disable_rce_media_uploads %>
+                    <% disabled = hash[:locked] && hash[:inherited] %>
+                    <tr>
+                      <td colspan="2">
+                        <%= r.check_box :value, checked: hash[:value], disabled: disabled %>
+                        <%= r.label :value, t("Disable uploads to Canvas Media from the enhanced rich content editor") %>
+                      </td>
+                    </tr>
+                  <% end %>
+                <% end %>
               <% end %>
             <% end %>
           </table>
@@ -327,31 +347,17 @@
             <% end %>
           </fieldset>
         <% end %>
-        <% if !@account.site_admin? && @account.root_account? && @account.feature_enabled?(:account_pronouns) %>
+        <% if !@account.site_admin? && @account.root_account? %>
           <fieldset>
             <legend><%= t("Personal Pronouns") %></legend>
             <%= f.fields_for :settings do |settings| %>
               <%= settings.check_box :can_add_pronouns, :checked => @account.settings[:can_add_pronouns], class: "element_toggler", "aria-controls": "personal_pronouns_options" %>
               <%= settings.label :can_add_pronouns, en: "Enable Personal Pronouns" %>
               <div id="personal_pronouns_options" <%= hidden(true) unless @account.settings[:can_add_pronouns] %>>
-                <table class="formtable">
-                  <tbody>
-                    <% ((@account.pronouns.presence || Pronouns.default_pronouns) + [nil]).each do |pronouns| %>
-                      <tr class="pronouns_row <%= raw ' blank" style="display: none;' if pronouns.nil? %>">
-                        <td> <input type="text" name="account[pronouns][]" value="<%= pronouns %>"/></td>
-                        <td> <a href="#" title="<%= t("Remove Pronouns %{pronoun}", :pronoun => pronouns) %>" role="button" class="close" data-remove=".pronouns_row"><i class="icon-end standalone-icon"></i></a> </td>
-                      </tr>
-                    <% end %>
-                  </tbody>
-                </table>
-                <button
-                  type="button"
-                  class="Button"
-                  onclick="$('.pronouns_row.blank').clone().removeClass('blank').show().insertBefore('.pronouns_row.blank').find('input').focus()"
-                >
-                  <i class='icon-add'></i>
-                  <%= t("Add pronouns option") %>
-                </button>
+                <%= settings.check_box :can_change_pronouns, :checked => @account.can_change_pronouns? %>
+                <%= settings.label :can_change_pronouns, en: "Allow users to change their pronouns in Canvas" %>
+                <% js_env(PRONOUNS_LIST: ((@account.pronouns.presence || Pronouns.default_pronouns)))
+                js_bundle :available_pronouns_list %>
               </div>
             <% end %>
           </fieldset>
@@ -412,23 +418,33 @@
               "list of addresses, or an address followed by a mask " +
               "(\"192.168.217.1/24\" or \"192.168.217.1/255.255.255.0\").\"") %>
             </div>
-            <table class="formtable">
+            <table class="formtable narrow">
               <tbody id="ip_filters">
                 <% ((@account.settings[:ip_filters] || {}).sort_by(&:first) << [nil, nil]).each do |name, filter| %>
                   <tr class="ip_filter <%= raw ' blank" style="display: none;' if name.nil? %>">
                     <td> <label> <%= t("Name:") %></label> <input aria-label="<%= t("Name") %>" type="text" class="name" value="<%= name %>"/></td>
-                    <td> <label> <%= t("Filter:") %></label> <input aria-label="<%= t("Filter") %>" type="text" class="value" value="<%= filter %>" maxlength="255"/></td>
                     <td>
-                      <a href="#" title="<%= t(:quiz_ip_filters_delete, "Remove Filter") %>" class="delete_filter_link"><i class="icon-end standalone-icon"></i></a>
+                      <label> <%= t("Filter:") %></label> <input aria-label="<%= t("Filter") %>" type="text" class="value" value="<%= filter %>" maxlength="255"/>
+                      <button
+                        type="button"
+                        class="Button Button--icon-action delete_filter_link"
+                        title="<%= t(:quiz_ip_filters_delete, "Remove Quiz IP Filter") %>"
+                      >
+                        <i class="icon-end standalone-icon"></i>
+                      </button>
                     </td>
                   </tr>
                 <% end %>
               </tbody>
             </table>
-            <a href="#" class="icon-add add_ip_filter_link">
+            <button
+              type="button"
+              class="Button add_ip_filter_link"
+              title="<%= t("Add Quiz IP Filter") %>"
+            >
+              <i class='icon-add'></i>
               <span aria-hidden="true"><%= t(:add_ip_filter_link, "Filter") %></span>
-              <span class="screenreader-only"><%= t("Add Quiz IP Filter") %></span>
-            </a>
+            </button>
           </fieldset>
         <% end %>
 
@@ -495,7 +511,7 @@
                     </p>
                     <p>
                       <%= t do %>
-                      Before implementing custom CSS or Javascript, please refer to <a href="https://community.canvaslms.com/docs/DOC-3010" target="_blank"> our documentation</a>.
+                      Before implementing custom CSS or Javascript, please refer to <a href="https://community.canvaslms.com/t5/Admin-Guide/How-do-I-upload-custom-JavaScript-and-CSS-files-to-an-account/ta-p/253" target="_blank"> our documentation</a>.
                       <% end %>
                     </p>
                   </div>
@@ -542,7 +558,7 @@
                 </div>
               <% end %>
               <div>
-                <%= settings.check_box :users_can_edit_name, :checked => @account.settings[:users_can_edit_name] != false %>
+                <%= settings.check_box :users_can_edit_name, :checked => @account.users_can_edit_name? %>
                 <%= settings.label :users_can_edit_name, :en => "Users can edit their name" %>
               </div>
 
@@ -627,7 +643,7 @@
 
           <fieldset id="turnitin_settings">
             <legend><%= t("Similarity Detection Platform") %></legend>
-            <table class="formtable">
+            <table class="formtable narrow">
               <tr>
                 <td><%= f.blabel :turnitin_pledge, en: "Similarity Pledge" %></td>
                 <td>
@@ -649,7 +665,7 @@
           <% if @account.settings[:enable_turnitin] %>
             <fieldset id="turnitin_settings">
               <legend><%= t(:turnitin_settings_title, "Turnitin Settings") %></legend>
-              <table class="formtable">
+              <table class="formtable narrow">
                 <tr>
                   <td><%= f.blabel :turnitin_account_id, :en => "Turnitin Account ID" %></td>
                   <td><%= f.text_field :turnitin_account_id, :class => "turnitin_account_settings" %></td>
@@ -746,8 +762,67 @@ acknowledge that you have read and agreed to the
 
         <%= render partial: 'external_integration_keys', locals: { f: f } %>
 
+        <% if @account.root_account &&
+              @account.root_account.feature_enabled?(:smart_alerts) &&
+              can_do(@account, @current_user, :manage_alerts)
+        %>
+          <fieldset>
+            <h2 class="screenreader-only"><%= t('Smart Assignment Alerts') %></h2>
+            <legend><%= t('Smart Assignment Alerts') %></legend>
+            <%= f.fields_for :settings do |settings| %>
+              <table class="formtable narrow">
+                <tr>
+                  <td>
+                    <label for="smart_alerts_threshold">
+                      <%= I18n.t('Hours (from due date) before students are alerted') %>
+                    </label>
+                  </td>
+                  <td>
+                    <%= settings.select :smart_alerts_threshold,
+                      options_for_select(
+                        # ref: KNO-231
+                        %w[ 12 24 36 48 ].map { |x| [ x, x ] },
+                        @account.settings.fetch(:smart_alerts_threshold, '36')
+                      )
+                    %>
+                  </td>
+                </tr>
+              </table>
+            <% end %>
+          </fieldset>
+        <% end %>
+
         <div class="button-container">
           <button type="submit" class="Button Button--primary"><%= t(:update_settings_button, "Update Settings") %></button>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+
+  <% if can_do(@account, @current_user, :manage_privacy_settings) %>
+    <div id="tab-privacy">
+      <h2 class="screenreader-only"><%= t('headings.privacy', "Privacy") %></h2>
+      <%= form_for(:account, url: account_url(@account), html: {
+            method: :put,
+            id: "account_privacy_settings"
+          }) do |f|
+      %>
+        <%= f.fields_for :settings do |settings| %>
+          <div>
+            <%= settings.check_box :enable_google_analytics, checked: @account.settings.fetch(:enable_google_analytics, true) %>
+            <%= settings.label :enable_google_analytics, en: "Allow tracking with Google Analytics" %>
+          </div>
+
+          <div>
+            <%= settings.check_box :enable_fullstory, checked: @account.settings.fetch(:enable_fullstory, true) %>
+            <%= settings.label :enable_fullstory, en: "Allow tracking with FullStory" %>
+          </div>
+        <% end %>
+
+        <div class="button-container">
+          <button type="submit" class="Button Button--primary">
+            <%= t(:update_settings_button, "Update Settings") %>
+          </button>
         </div>
       <% end %>
     </div>
@@ -777,7 +852,7 @@ acknowledge that you have read and agreed to the
               <table class="formtable" style='margin-<%= direction('left') %>: 1.5em;'>
               <tr>
                 <td><%= t 'notifications.from', 'From' %></td>
-                <td><%= HostUrl.outgoing_email_default_name %> <%= '<notifications@instructure.com>' %></td>
+                <td class="long-word"><%= HostUrl.outgoing_email_default_name %> <%= '<notifications@instructure.com>' %></td>
               </tr>
               <tr>
                 <td><%= t 'notifications.subject', 'Subject' %></td>
@@ -793,7 +868,7 @@ acknowledge that you have read and agreed to the
               </tr>
               <tr>
                 <td><%= t 'notifications.email_reply_to', 'Reply-To' %></td>
-                <td><%= 'notifications+e79df3ljk09s3jkl09ssljk3lkj2l-10191633@instructure.com' %></td>
+                <td class="long-word"><%= 'notifications+e79df3ljk09s3jkl09ssljk3lkj2l-10191633@instructure.com' %></td>
               </tr>
             </table>
             </blockquote>
@@ -817,7 +892,7 @@ acknowledge that you have read and agreed to the
             <table class="formtable" style='margin-<%= direction('left') %>: 1.5em;'>
               <tr>
                 <td><%= t 'notifications.from', 'From' %></td>
-                <td><strong id='custom_default_name_display'></strong> <%= '<notifications@instructure.com>' %></td>
+                <td class="long-word"><strong id='custom_default_name_display' class="custom-text"></strong> <%= '<notifications@instructure.com>' %></td>
               </tr>
               <tr>
                 <td><%= t 'notifications.subject', 'Subject' %></td>
@@ -833,7 +908,7 @@ acknowledge that you have read and agreed to the
               </tr>
               <tr>
                 <td><%= t 'notifications.email_reply_to', 'Reply-To' %></td>
-                <td><%= 'notifications+e79df3ljk09s3jkl09ssljk3lkj2l-10191633@instructure.com' %></td>
+                <td class="long-word"><%= 'notifications+e79df3ljk09s3jkl09ssljk3lkj2l-10191633@instructure.com' %></td>
               </tr>
             </table>
             </blockquote>
@@ -922,9 +997,9 @@ acknowledge that you have read and agreed to the
             <div class="notification_account_content">
               <div class="ic-notification__content">
                 <div class="ic-notification__message">
-                  <h4 class="ic-notification__title notification_subject">
+                  <h2 class="ic-notification__title notification_subject">
                     <%= announcement.subject %>
-                  </h4>
+                  </h2>
                   <span class="notification_message">
                     <%= user_content(announcement.message) %>
                   </span>
@@ -1165,7 +1240,7 @@ acknowledge that you have read and agreed to the
 
         </div>
 
-        <% if !@account.site_admin? && @account.root_account.feature_enabled?(:notification_for_global_announcement) %>
+        <% if !@account.site_admin? %>
           <div class="ic-Form-control ic-Form-control--checkbox">
             <%= f.check_box :send_message %>
             <%= f.label :send_message, t("Send notification directly to users when announcement starts"), :class => "ic-Label" %>

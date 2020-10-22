@@ -59,20 +59,12 @@ describe Mutations::PostAssignmentGradesForSections do
   end
 
   before(:each) do
-    course.enable_feature!(:new_gradebook)
-    PostPolicy.enable_feature!
     @section1_student = section1.enroll_user(User.create!, "StudentEnrollment", "active").user
     @section2_student = section2.enroll_user(User.create!, "StudentEnrollment", "active").user
   end
 
   context "when user has grade permission" do
     let(:context) { { current_user: teacher } }
-
-    it "requires that the PostPolicy feature be enabled" do
-      PostPolicy.disable_feature!
-      result = execute_query(mutation_str(assignment_id: assignment.id, section_ids: [section1.id]), context)
-      expect(result.dig("errors", 0, "message")).to eql "Post Policies feature not enabled"
-    end
 
     it "requires that assignmentId be passed in the query" do
       result = execute_query(mutation_str(section_ids: [section1.id]), context)
@@ -225,23 +217,14 @@ describe Mutations::PostAssignmentGradesForSections do
         expect(@student1_submission.reload).to be_posted
       end
 
-      it "posts submissions with hidden comments if graded_only is true and post comments feature is enabled" do
-        course.root_account.enable_feature!(:allow_postable_submission_comments)
+      it "posts submissions with hidden comments if graded_only is true" do
         @student2_submission.add_comment(author: teacher, comment: "good work!", hidden: true)
         execute_query(mutation_str(assignment_id: assignment.id, section_ids:[section1.id], graded_only: true), context)
         post_submissions_job.invoke_job
         expect(@student2_submission.reload).to be_posted
       end
 
-      it "does not post submissions with hidden comments if graded_only is true and post comments feature is not enabled" do
-        @student2_submission.add_comment(author: teacher, comment: "good work!", hidden: true)
-        execute_query(mutation_str(assignment_id: assignment.id, section_ids:[section1.id], graded_only: true), context)
-        post_submissions_job.invoke_job
-        expect(@student2_submission.reload).not_to be_posted
-      end
-
-      it "does not post submissions with no hidden comments if graded_only is true and post comments feature is enabled" do
-        course.root_account.enable_feature!(:allow_postable_submission_comments)
+      it "does not post submissions with no hidden comments if graded_only is true" do
         @student2_submission.add_comment(author: @section1_student2, comment: "good work!", hidden: false)
         execute_query(mutation_str(assignment_id: assignment.id, section_ids:[section1.id], graded_only: true), context)
         post_submissions_job.invoke_job

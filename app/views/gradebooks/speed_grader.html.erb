@@ -45,18 +45,8 @@
           <i class="icon-gradebook" aria-hidden="true"></i>
           <span class="screenreader-only" aria-hidden="true"><%= t("Gradebook") %></span>
         </a>
-        <% if post_policies_enabled %>
-          <span id="speed_grader_post_grades_menu_mount_point"></span>
-        <% else %>
-          <button type="button" data-muted="<%= @assignment.muted? %>" id="mute_link"
-            class="Button Button--icon-action gradebookActions__Button<%= @disable_unmute_assignment ? " disabled" : "" %>" title="<%= t('Mute/Unmute Assignment') %>">
-            <i class=<%= @assignment.muted? ? "icon-muted" : "icon-unmuted"  %> aria-hidden="true"></i>
-            <span class="screenreader-only" aria-hidden="true">
-              <%= @assignment.muted? ? t("Unmute Assignment") : t("Mute Assignment") %>
-            </span>
-          </button>
-        <% end %>
 
+        <span id="speed_grader_post_grades_menu_mount_point"></span>
         <span id="speed_grader_settings_mount_point"></span>
       </div>
       <div class="assignmentDetails">
@@ -175,7 +165,9 @@
                   download_url = context_url(@context, resource, @assignment.id, submission_id_or_anonymous_id, download: "{{attachmentId}}")
                   preview_url = context_url(@context, resource, @assignment.id, submission_id_or_anonymous_id, download: "{{attachmentId}}", inline: 1)
                 %>
-                <a class="submission-file-download icon-download" title="<%= t("Download this file") %>" href="<%= download_url %>" download></a>
+                <a class="submission-file-download icon-download" href="<%= download_url %>" download>
+                  <span class="screenreader-only"><%= t("Download this file") %></span>
+                </a>
                 <span class="turnitin_score_container"></span>
                 <a class="display_name no-hover" href="<%= preview_url %>" title="<%= t('titles.preview_file', "Preview this File") %>">???</a>
                 <span id="react_pill_container"></span>
@@ -194,7 +186,6 @@
 
         <div class="content_box">
           <% if @assignment.rubric_association %>
-          <a href="<%= context_url(@context, :context_rubric_association_rubric_assessments_url, @assignment.rubric_association) %>" class="update_rubric_assessment_url" style="display: none;">&nbsp;</a>
           <div id="rubric_full" style="display: none;">
             <div id="rubric_full_resizer">
               <div id="rubric_full_resizer_handle"></div>
@@ -224,10 +215,9 @@
             <h2 class="gradebookHeader--rightside"><%= t('headers.assessment', "Assessment") %></h2>
             <% if can_do(@context, @current_user, :manage_grades) || (@context.concluded? && can_do(@context, @current_user, :read_as_admin)) %>
               <div id="grade_container">
-                <%= render partial: "grading_box_extended", locals: {assignment: @assignment, post_policies_enabled: post_policies_enabled} %>
+                <%= render partial: "grading_box_extended", locals: {assignment: @assignment} %>
                 <span class="turnitin_score_container"></span>
                 <a href="#" id="submit_same_score"><br><%= t('links.submit_same_score', "Use this same grade for the resubmission") %></a>
-                <a style="display: none;" title="POST" href="<%= context_url(@context, :update_submission_context_gradebook_url) %>" class="update_submission_grade_url">&nbsp;</a>
                 <div class="turnitin_info_container"></div>
               </div>
 
@@ -420,10 +410,7 @@
     <button type="submit" class="btn btn-primary submit_button"><%= t('buttons.save_settings', "Save Settings") %></button>
   </div>
 </form>
-<% unless post_policies_enabled %>
-  <%= render :partial => "shared/mute_dialog" %>
-  <%= render :partial => "shared/unmute_dialog" %>
-<% end %>
+
 <ul id="section-menu" class="ui-selectmenu-menu ui-widget ui-widget-content ui-selectmenu-menu-dropdown ui-selectmenu-open" style="display:none;" role="listbox" aria-activedescendant="section-menu-link">
   <li role="presentation" class="ui-selectmenu-item">
     <a href="#" tabindex="-1" role="option" aria-selected="true" id="section-menu-link">
@@ -440,10 +427,12 @@
 <div id="post-assignment-grades-tray"></div>
 
 <span id="aria_name_alert" class="screenreader-only" aria-live="polite"></span>
-<% keyboard_navigation([
-  {:key => t('keycodes.next_student', 'j'), :description => t('keycode_descriptions.next_student', 'Next Student')},
-  {:key => t('keycodes.previous_student', 'k'), :description => t('keycode_descriptions.previous_student', 'Previous Student')},
-  {:key => t('keycodes.leave_comment', 'c'), :description => t('keycode_descriptions.leave_comment', 'Leave Comment')},
-  {:key => t('keycodes.change_grade', 'g'), :description => t('keycode_descriptions.change_grade', 'Change Grade')},
-  {:key => t('keycodes.use_rubric', 'r'), :description => t('keycode_descriptions.use_rubric', 'Use Rubric')}
-]) %>
+<% unless @current_user.try(:prefers_no_keyboard_shortcuts?) %>
+  <% keyboard_navigation([
+    {:key => t('keycodes.next_student', 'j'), :description => t('keycode_descriptions.next_student', 'Next Student')},
+    {:key => t('keycodes.previous_student', 'k'), :description => t('keycode_descriptions.previous_student', 'Previous Student')},
+    {:key => t('keycodes.leave_comment', 'c'), :description => t('keycode_descriptions.leave_comment', 'Leave Comment')},
+    {:key => t('keycodes.change_grade', 'g'), :description => t('keycode_descriptions.change_grade', 'Change Grade')},
+    {:key => t('keycodes.use_rubric', 'r'), :description => t('keycode_descriptions.use_rubric', 'Use Rubric')}
+  ]) %>
+<% end %>

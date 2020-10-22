@@ -95,6 +95,10 @@ describe('RCEWrapper', () => {
         decode: input => {
           return input
         },
+        isEmpty: () => editor.content.length === 0,
+        remove: elem => {
+          elem.remove()
+        },
         doc: document.createElement('div')
       },
       selection: {
@@ -106,7 +110,11 @@ describe('RCEWrapper', () => {
         },
         getContent: () => {
           return ''
-        }
+        },
+        collapse: () => undefined
+      },
+      undoManager: {
+        ignore: fn => fn()
       },
       insertContent: contentToInsert => {
         editor.content += contentToInsert
@@ -116,6 +124,7 @@ describe('RCEWrapper', () => {
       },
       setContent: sinon.spy(c => (editor.content = c)),
       getContent: () => editor.content,
+      getBody: () => editor.content,
       hidden: false,
       isHidden: () => {
         return editor.hidden
@@ -167,7 +176,7 @@ describe('RCEWrapper', () => {
       element = createdMountedElement().getMountedInstance()
       editor.hidden = true
       document.getElementById(textareaId).value = 'Some Input HTML'
-      element.toggle()
+      element.toggleView()
       assert.equal(element.getCode(), 'Some Input HTML')
     })
 
@@ -189,8 +198,8 @@ describe('RCEWrapper', () => {
       sinon.assert.called(handleUnmount)
     })
 
-    it('doesnt reset the doc for other commands', () => {
-      element.toggle()
+    it("doesn't reset the doc for other commands", () => {
+      element.toggleView()
       assert(!editorCommandSpy.calledWith('mceNewDocument'))
     })
 
@@ -223,6 +232,14 @@ describe('RCEWrapper', () => {
       instance.refs = {}
       instance.refs.rce = {forceUpdate: () => 'no op'}
       instance.indicator = () => {}
+
+      sinon.stub(instance, 'iframe').value({
+        contentDocument: {
+          body: {
+            clientWidth: 500
+          }
+        }
+      })
     })
 
     afterEach(() => {
@@ -293,7 +310,6 @@ describe('RCEWrapper', () => {
 
     describe('insertImagePlaceholder', () => {
       let globalImage
-      let contentInsertionStub
       function mockImage(props) {
         // jsdom doesn't support Image
         // mock enough for RCEWrapper.insertImagePlaceholder
@@ -310,12 +326,6 @@ describe('RCEWrapper', () => {
       function restoreImage() {
         global.Image = globalImage
       }
-      beforeEach(() => {
-        contentInsertionStub = sinon.stub(contentInsertion, 'insertContent')
-      })
-      afterEach(() => {
-        contentInsertion.insertContent.restore()
-      })
 
       it('inserts a placeholder image with the proper metadata', () => {
         mockImage()
@@ -331,16 +341,50 @@ describe('RCEWrapper', () => {
 
         const imageMarkup = `
     <div
+      aria-label="Loading"
       data-placeholder-for="green_square"
-      style="width: 10px; height: 10px; border: solid 1px #8B969E; background: #c2c2c2; display:inline-block; padding:5px 0 0 5px"
-    >Loading...</div>`
+      style="width: 10px; height: 10px;"
+    >`
         instance.insertImagePlaceholder(props)
-        sinon.assert.calledWith(contentInsertionStub, editor, imageMarkup)
+        sinon.assert.calledWith(
+          editorCommandSpy,
+          'mceInsertContent',
+          false,
+          sinon.match(imageMarkup)
+        )
         restoreImage()
       })
 
-      it('resizes the placeholder image for a large, landscape image', () => {
-        mockImage({width: 640, height: 200})
+      it('inserts a placeholder image with an encoded name to prevent nested quotes', () => {
+        mockImage()
+        const greenSquare =
+          'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFElEQVR42mNk+A+ERADGUYX0VQgAXAYT9xTSUocAAAAASUVORK5CYII='
+        const props = {
+          name: 'filename "with" quotes',
+          domObject: {
+            preview: greenSquare
+          },
+          contentType: 'image/png'
+        }
+
+        const imageMarkup = `
+    <div
+      aria-label="Loading"
+      data-placeholder-for="filename%20%22with%22%20quotes"
+      style="width: 10px; height: 10px;"
+    >`
+        instance.insertImagePlaceholder(props)
+        sinon.assert.calledWith(
+          editorCommandSpy,
+          'mceInsertContent',
+          false,
+          sinon.match(imageMarkup)
+        )
+        restoreImage()
+      })
+
+      it('constrains the image placeholder to the width of the rce', () => {
+        mockImage({width: 1000, height: 1000})
         const greenSquare =
           'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFElEQVR42mNk+A+ERADGUYX0VQgAXAYT9xTSUocAAAAASUVORK5CYII='
         const props = {
@@ -353,33 +397,17 @@ describe('RCEWrapper', () => {
 
         const imageMarkup = `
     <div
+      aria-label="Loading"
       data-placeholder-for="green_square"
-      style="width: 320px; height: 100px; border: solid 1px #8B969E; background: #c2c2c2; display:inline-block; padding:5px 0 0 5px"
-    >Loading...</div>`
+      style="width: 500px; height: 500px;"
+    >`
         instance.insertImagePlaceholder(props)
-        sinon.assert.calledWith(contentInsertionStub, editor, imageMarkup)
-        restoreImage()
-      })
-
-      it('resizes the placeholder image for a large, portrait image', () => {
-        mockImage({width: 200, height: 640})
-        const greenSquare =
-          'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFElEQVR42mNk+A+ERADGUYX0VQgAXAYT9xTSUocAAAAASUVORK5CYII='
-        const props = {
-          name: 'green_square',
-          domObject: {
-            preview: greenSquare
-          },
-          contentType: 'image/png'
-        }
-
-        const imageMarkup = `
-    <div
-      data-placeholder-for="green_square"
-      style="width: 100px; height: 320px; border: solid 1px #8B969E; background: #c2c2c2; display:inline-block; padding:5px 0 0 5px"
-    >Loading...</div>`
-        instance.insertImagePlaceholder(props)
-        sinon.assert.calledWith(contentInsertionStub, editor, imageMarkup)
+        sinon.assert.calledWith(
+          editorCommandSpy,
+          'mceInsertContent',
+          false,
+          sinon.match(imageMarkup)
+        )
         restoreImage()
       })
 
@@ -392,11 +420,17 @@ describe('RCEWrapper', () => {
 
         const imageMarkup = `
     <div
+      aria-label="Loading"
       data-placeholder-for="file.txt"
-      style="width: 8rem; height: 1rem; border: solid 1px #8B969E; background: #c2c2c2; display:inline-block; padding:5px 0 0 5px"
-    >Loading...</div>`
+      style="width: 8rem; height: 1rem;"
+    >`
         instance.insertImagePlaceholder(props)
-        sinon.assert.calledWith(contentInsertionStub, editor, imageMarkup)
+        sinon.assert.calledWith(
+          editorCommandSpy,
+          'mceInsertContent',
+          false,
+          sinon.match(imageMarkup)
+        )
       })
 
       it('inserts a video file placeholder image with the proper metadata', () => {
@@ -407,11 +441,17 @@ describe('RCEWrapper', () => {
         }
         const imageMarkup = `
     <div
+      aria-label="Loading"
       data-placeholder-for="file.mov"
-      style="width: 400px; height: 225px; border: solid 1px #8B969E; background: #c2c2c2; display:inline-block; padding:5px 0 0 5px"
-    >Loading...</div>`
+      style="width: 400px; height: 225px;"
+    >`
         instance.insertImagePlaceholder(props)
-        sinon.assert.calledWith(contentInsertionStub, editor, imageMarkup)
+        sinon.assert.calledWith(
+          editorCommandSpy,
+          'mceInsertContent',
+          false,
+          sinon.match(imageMarkup)
+        )
       })
 
       it('inserts an audio file placeholder image with the proper metadata', () => {
@@ -422,11 +462,17 @@ describe('RCEWrapper', () => {
         }
         const imageMarkup = `
     <div
+      aria-label="Loading"
       data-placeholder-for="file.mp3"
-      style="width: 300px; height: 2.813rem; border: solid 1px #8B969E; background: #c2c2c2; display:inline-block; padding:5px 0 0 5px"
-    >Loading...</div>`
+      style="width: 320px; height: 14.25rem;"
+    >`
         instance.insertImagePlaceholder(props)
-        sinon.assert.calledWith(contentInsertionStub, editor, imageMarkup)
+        sinon.assert.calledWith(
+          editorCommandSpy,
+          'mceInsertContent',
+          false,
+          sinon.match(imageMarkup)
+        )
       })
     })
 
@@ -735,15 +781,16 @@ describe('RCEWrapper', () => {
   describe('textarea', () => {
     let instance, elem
 
-    function stubEventListeners(elem) {
-      sinon.stub(elem, 'addEventListener')
-      sinon.stub(elem, 'removeEventListener')
+    function stubEventListeners(elm) {
+      sinon.stub(elm, 'addEventListener')
+      sinon.stub(elm, 'removeEventListener')
     }
 
     beforeEach(() => {
       instance = createBasicElement()
       elem = document.getElementById(textareaId)
       stubEventListeners(elem)
+      sinon.stub(instance, 'doAutoSave')
     })
 
     describe('handleTextareaChange', () => {
@@ -753,12 +800,14 @@ describe('RCEWrapper', () => {
         editor.hidden = true
         instance.handleTextareaChange()
         sinon.assert.calledWith(editor.setContent, value)
+        sinon.assert.called(instance.doAutoSave)
       })
 
       it('does not update the editor if editor is not hidden', () => {
         editor.hidden = false
         instance.handleTextareaChange()
         sinon.assert.notCalled(editor.setContent)
+        sinon.assert.notCalled(instance.doAutoSave)
       })
     })
   })
@@ -844,6 +893,35 @@ describe('RCEWrapper', () => {
       const alertArea = tree.dive(['AlertMessageArea'])
       const alerts = alertArea.everySubTree('Alert')
       assert.ok(alerts.length === 2)
+    })
+  })
+
+  describe('wrapOptions', () => {
+    it('includes instructure_record in toolbar if not instRecordDisabled', () => {
+      const wrapper = new RCEWrapper({
+        tinymce: fakeTinyMCE,
+        ...trayProps(),
+        instRecordDisabled: false
+      })
+      const options = wrapper.wrapOptions({})
+      const expected = [
+        'instructure_links',
+        'instructure_image',
+        'instructure_record',
+        'instructure_documents'
+      ]
+      assert.deepStrictEqual(options.toolbar[2].items, expected)
+    })
+
+    it('instructure_record in not toolbar if instRecordDisabled is set', () => {
+      const wrapper = new RCEWrapper({
+        tinymce: fakeTinyMCE,
+        ...trayProps(),
+        instRecordDisabled: true
+      })
+      const options = wrapper.wrapOptions({})
+      const expected = ['instructure_links', 'instructure_image', 'instructure_documents']
+      assert.deepStrictEqual(options.toolbar[2].items, expected)
     })
   })
 })

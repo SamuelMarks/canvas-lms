@@ -62,7 +62,10 @@ daySubCollectionView      = new CollectionView
                                 template: daySubCollectionTemplate
 
 progressingMigCollection  = new ProgressingContentMigrationCollection null,
-                                course_id: ENV.COURSE_ID
+                                course_id: ENV.COURSE_ID,
+                                params: {
+                                  per_page: 25
+                                }
 
 progressingCollectionView = new PaginatedCollectionView
                                 el: '#progress'
@@ -129,6 +132,15 @@ ConverterViewControl.register
                               oldStartDate: ENV.OLD_START_DATE
                               oldEndDate: ENV.OLD_END_DATE
 
+          importQuizzesNext:     new ImportQuizzesNextView
+                                model: ConverterViewControl.getModel()
+                                quizzesNextEnabled: ENV.QUIZZES_NEXT_ENABLED
+                                migrationDefault: ENV.NEW_QUIZZES_MIGRATION_DEFAULT
+                                questionBank: null
+
+          quizzes_next_enabled: ENV.QUIZZES_NEXT_ENABLED
+          new_quizzes_migration: ENV.NEW_QUIZZES_MIGRATION
+
 
 ConverterViewControl.register
   key: 'moodle_converter'
@@ -157,12 +169,21 @@ ConverterViewControl.register
 
           selectContent:       new SelectContentCheckboxView(model: ConverterViewControl.getModel())
 
+          importQuizzesNext:     new ImportQuizzesNextView
+                                model: ConverterViewControl.getModel()
+                                quizzesNextEnabled: ENV.QUIZZES_NEXT_ENABLED
+                                migrationDefault: ENV.NEW_QUIZZES_MIGRATION_DEFAULT
+                                questionBank: null
+
           dateShift:        new DateShiftView
                               model: ConverterViewControl.getModel()
                               collection: daySubCollection
                               daySubstitution: daySubCollectionView
                               oldStartDate: ENV.OLD_START_DATE
                               oldEndDate: ENV.OLD_END_DATE
+
+          quizzes_next_enabled: ENV.QUIZZES_NEXT_ENABLED
+          new_quizzes_migration: ENV.NEW_QUIZZES_MIGRATION
 
 ConverterViewControl.register
   key: 'common_cartridge_importer'
@@ -178,6 +199,7 @@ ConverterViewControl.register
           importQuizzesNext:     new ImportQuizzesNextView
                                 model: ConverterViewControl.getModel()
                                 quizzesNextEnabled: ENV.QUIZZES_NEXT_ENABLED
+                                migrationDefault: ENV.NEW_QUIZZES_MIGRATION_DEFAULT
                                 questionBank: questionBankView
 
           overwriteAssessmentContent: new OverwriteAssessmentContentView(model: ConverterViewControl.getModel())
@@ -191,7 +213,7 @@ ConverterViewControl.register
                               oldEndDate: ENV.OLD_END_DATE
 
           quizzes_next_enabled: ENV.QUIZZES_NEXT_ENABLED
-          quizzes_next_configured_root: ENV.QUIZZES_NEXT_CONFIGURED_ROOT
+          quizzes_next_configured_root: ENV.NEW_QUIZZES_IMPORT
 
 ConverterViewControl.register
   key: 'qti_converter'
@@ -205,11 +227,12 @@ ConverterViewControl.register
           importQuizzesNext:     new ImportQuizzesNextView
                                 model: ConverterViewControl.getModel()
                                 quizzesNextEnabled: ENV.QUIZZES_NEXT_ENABLED
+                                migrationDefault: ENV.NEW_QUIZZES_MIGRATION_DEFAULT
                                 questionBank: questionBankView
 
           overwriteAssessmentContent: new OverwriteAssessmentContentView(model: ConverterViewControl.getModel())
           quizzes_next_enabled: ENV.QUIZZES_NEXT_ENABLED
-          quizzes_next_configured_root: ENV.QUIZZES_NEXT_CONFIGURED_ROOT
+          quizzes_next_configured_root: ENV.NEW_QUIZZES_IMPORT
 
 # Listen for deep linking messages
 window.addEventListener 'message', processMigrationContentItem

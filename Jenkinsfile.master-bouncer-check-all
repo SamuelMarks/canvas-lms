@@ -18,34 +18,27 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+library "canvas-builds-library"
+
 pipeline {
   agent { label 'canvas-docker' }
 
   options {
     ansiColor('xterm')
+    timestamps()
   }
 
   environment {
-    // we only use this 
+    // we only use this
     PATCHSET_TAG = "$DOCKER_REGISTRY_FQDN/jenkins/canvas-lms:master"
     GERRIT_BRANCH = "master"
     GERGICH_REVIEW_LABEL = "Lint-Review"
   }
 
   stages {
-    stage('Print Env Variables') {
+    stage('Setup') {
       steps {
-        timeout(time: 20, unit: 'SECONDS') {
-          sh 'printenv | sort'
-        }
-      }
-    }
-
-    stage ('Pre-Cleanup') {
-      steps {
-        timeout(time: 2) {
-          sh 'build/new-jenkins/docker-cleanup.sh'
-        }
+        cleanAndSetup()
       }
     }
 
@@ -54,7 +47,6 @@ pipeline {
         // should only take about 5-10 min, but just in case
         timeout(time: 30) {
           script {
-            def credentials = load 'build/new-jenkins/groovy/credentials.groovy'
             credentials.withMasterBouncerCredentials {
               credentials.withGerritCredentials {
                 sh 'build/new-jenkins/linters/run-master-bouncer-all.py'
@@ -68,8 +60,7 @@ pipeline {
 
   post {
     cleanup {
-      sh 'build/new-jenkins/docker-cleanup.sh --allow-failure'
+      execute 'bash/docker-cleanup.sh --allow-failure'
     }
   }
 }
-

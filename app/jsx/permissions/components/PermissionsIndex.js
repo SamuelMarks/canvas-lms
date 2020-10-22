@@ -55,7 +55,7 @@ export default class PermissionsIndex extends Component {
 
   state = {
     permissionSearchString: '',
-    contextType: COURSE
+    contextType: COURSE,
   }
 
   onRoleFilterChange = (_, value) => {
@@ -118,11 +118,14 @@ export default class PermissionsIndex extends Component {
 
   renderHeader() {
     return (
-      <div className="permissions-v2__header_contianer">
+      <div className="permissions-v2__header_container">
         <View display="block">
-          <Grid>
+          <Grid
+            startAt="large"
+            rowSpacing='small'
+          >
             <Grid.Row vAlign="middle">
-              <Grid.Col width={3}>
+              <Grid.Col width="auto">
                 <TextInput
                   label={<ScreenReaderContent>{I18n.t('Search Permissions')}</ScreenReaderContent>}
                   placeholder={I18n.t('Search Permissions')}
@@ -135,7 +138,7 @@ export default class PermissionsIndex extends Component {
                   name="permission_search"
                 />
               </Grid.Col>
-              <Grid.Col width={8}>
+              <Grid.Col width={null}>
                 <Select
                   id="permissions-role-filter"
                   label={<ScreenReaderContent>{I18n.t('Filter Roles')}</ScreenReaderContent>}
@@ -164,7 +167,7 @@ export default class PermissionsIndex extends Component {
                     ))}
                 </Select>
               </Grid.Col>
-              <Grid.Col width={2}>
+              <Grid.Col width="auto">
                 <Button
                   id="add_role"
                   variant="primary"

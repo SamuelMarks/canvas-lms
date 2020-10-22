@@ -320,12 +320,6 @@ input[type=radio] + label {
   }
 }
 
-// all the browsers render this differently, remove line-height so the text doesn't
-// get ridiculously misaligned.
-input[type=file] {
-  line-height: 1em;
-}
-
 ///////==============
 /// Table Settings
 ///////==============
@@ -485,23 +479,6 @@ address {
 /// Popover Settings
 ///////==============
 
-/*
-@styleguide Popovers
-
-## Accessible *body-only* popovers
-
-Here's an accessible way to do it for popovers without a header.
-`.popover-padded` takes care of what `.popover-content` did above.
-
-```html
-<a
-  data-tooltip='{"tooltipClass":"popover popover-padded", "position":"right"}'
-  title="Lo-fi next level kale chips narwhal tattooed, tonx YOLO mixtape.">
-  Text with accessible popover
-</a>
-
-```
-*/
 .ui-widget.ui-tooltip {
   word-wrap: break-word;
 }

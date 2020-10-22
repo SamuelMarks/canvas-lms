@@ -1688,6 +1688,94 @@ describe EnrollmentsApiController, type: :request do
         end
       end
 
+      describe "current points" do
+        let_once(:course) { Course.create! }
+        let_once(:student) { User.create! }
+        let_once(:teacher) { User.create! }
+
+        let_once(:base_params) { { controller: "enrollments_api", action: "index", format: "json" } }
+
+        before(:once) do
+          course.offer!
+
+          course.enroll_teacher(teacher, enrollment_state: "active")
+          enrollment = course.enroll_student(student, enrollment_state: "active")
+          enrollment.scores.create!(current_points: 75, unposted_current_points: 99)
+        end
+
+        context "for a user who can manage grades for the enrollment's course" do
+          let_once(:api_path) { "/api/v1/courses/#{course.id}/enrollments" }
+          let_once(:params_without_points) { base_params.merge({ course_id: course.id.to_param }) }
+
+          context "when requesting current points" do
+            let(:enrollment_grades_json) do
+              params = params_without_points.merge({ include: ["current_points"] })
+              json = api_call_as_user(teacher, :get, api_path, params)
+              json.find { |enrollment| enrollment["user_id"] == student.id }["grades"]
+            end
+
+            it "includes the current_points field" do
+              expect(enrollment_grades_json["current_points"]).to eq 75
+            end
+
+            it "includes the unposted_current_points field" do
+              expect(enrollment_grades_json["unposted_current_points"]).to eq 99
+            end
+          end
+
+          context "when not requesting current points" do
+            let(:enrollment_grades_json) do
+              json = api_call_as_user(teacher, :get, api_path, params_without_points)
+              json.find { |enrollment| enrollment["user_id"] == student.id }["grades"]
+            end
+
+            it "does not include the current_points field" do
+              expect(enrollment_grades_json).not_to include("current_points")
+            end
+
+            it "does not include the unposted_current_points field" do
+              expect(enrollment_grades_json).not_to include("unposted_current_points")
+            end
+          end
+        end
+
+        context "for a student viewing their own enrollment" do
+          let_once(:api_path) { "/api/v1/users/#{student.id}/enrollments" }
+          let_once(:params_without_points) { base_params.merge({ user_id: student.id.to_param }) }
+
+          context "when requesting current points" do
+            let(:enrollment_grades_json) do
+              params = params_without_points.merge({ include: ["current_points"] })
+              json = api_call_as_user(student, :get, api_path, params)
+              json.find { |enrollment| enrollment["user_id"] == student.id }["grades"]
+            end
+
+            it "includes the current_points field" do
+              expect(enrollment_grades_json["current_points"]).to eq 75
+            end
+
+            it "does not include the unposted_current_points field" do
+              expect(enrollment_grades_json).not_to include("unposted_current_points")
+            end
+          end
+
+          context "when not requesting current points" do
+            let(:enrollment_grades_json) do
+              json = api_call_as_user(student, :get, api_path, params_without_points)
+              json.find { |enrollment| enrollment["user_id"] == student.id }["grades"]
+            end
+
+            it "does not return the current_points field" do
+              expect(enrollment_grades_json).not_to include("current_points")
+            end
+
+            it "does not return the unposted_current_points field" do
+              expect(enrollment_grades_json).not_to include("unposted_current_points")
+            end
+          end
+        end
+      end
+
       it "should not display grades when hide_final_grades is true for the course" do
         @course.hide_final_grades = true
         @course.save
@@ -1715,11 +1803,23 @@ describe EnrollmentsApiController, type: :request do
       it "should show enrollments for courses that aren't published if state[]=current_and_future" do
         course_factory
         @course.claim
-        enrollment = course_factory.enroll_student(@user)
+        enrollment = @course.enroll_student(@user)
         enrollment.update_attribute(:workflow_state, 'active')
 
         json = api_call(:get, @user_path,
                         @user_params.merge(:state => %w{current_and_future}, :type => %w{StudentEnrollment}))
+        expect(json.map { |e| e['id'] }).to include enrollment.id
+      end
+
+      it "should show enrollments for courses with future start dates if state[]=current_and_future" do
+        course_factory
+        @course.update_attributes(:start_at => 1.week.from_now, :restrict_enrollments_to_course_dates => true)
+        enrollment = @course.enroll_student(@user)
+        enrollment.update_attribute(:workflow_state, 'active')
+        expect(enrollment.enrollment_state.state).to eq "pending_active"
+
+        json = api_call(:get, @user_path,
+          @user_params.merge(:state => %w{current_and_future}, :type => %w{StudentEnrollment}))
         expect(json.map { |e| e['id'] }).to include enrollment.id
       end
 
@@ -2097,121 +2197,152 @@ describe EnrollmentsApiController, type: :request do
     end
 
     describe "pagination" do
-      it "should properly paginate" do
-        Account.default.enable_feature!(:bookmarking_for_enrollments_index)
-        json = api_call(:get, "#{@path}?page=1&per_page=1", @params.merge(:page => 1.to_param, :per_page => 1.to_param))
-        enrollments = %w{observer student ta teacher}.inject([]) { |res, type|
-          res = res + @course.send("#{type}_enrollments").preload(:user)
-        }.map do |e|
-          h = {
-            'root_account_id' => e.root_account_id,
-            'limit_privileges_to_course_section' => e.limit_privileges_to_course_section,
-            'enrollment_state' => e.workflow_state,
-            'id' => e.id,
-            'user_id' => e.user_id,
-            'type' => e.type,
-            'role' => e.role.name,
-            'role_id' => e.role.id,
-            'course_section_id' => e.course_section_id,
-            'course_id' => e.course_id,
-            'user' => {
-              'name' => e.user.name,
-              'sortable_name' => e.user.sortable_name,
-              'short_name' => e.user.short_name,
-              'id' => e.user.id,
-              'created_at' => e.user.created_at.iso8601
-            },
-            'html_url' => course_user_url(@course, e.user),
-            'associated_user_id' => nil,
-            'updated_at' => e.updated_at.xmlschema,
-            'created_at' => e.created_at.xmlschema,
-            'start_at' => nil,
-            'end_at' => nil,
-            'last_activity_at' => nil,
-            'last_attended_at' => nil,
-            'total_activity_time' => 0
-          }
-          h['grades'] = {
-            'html_url' => course_student_grades_url(@course, e.user),
-            'final_score' => nil,
-            'current_score' => nil,
-            'final_grade' => nil,
-            'current_grade' => nil,
-          } if e.student?
-          h
-        end
-        link_header = response.headers['Link'].split(',')
-        expect(link_header[0]).to match /page=first&per_page=1/ # current page
-        md = link_header[1].match(/page=(bookmark.*)&per_page=1/)  # next page
-        bookmark = md[1]
-        expect(bookmark).to be_present
-        expect(link_header[2]).to match /page=first&per_page=1/ # first page
-        expect(json).to eql [enrollments[0]]
+      shared_examples_for 'numeric pagination' do
+        it "should properly paginate" do
+          json = api_call(:get, "#{@path}?page=1&per_page=1", @params.merge(:page => 1.to_param, :per_page => 1.to_param))
+          enrollments = %w{observer student ta teacher}.inject([]) { |res, type|
+            res = res + @course.send("#{type}_enrollments").preload(:user)
+          }.map do |e|
+            h = {
+              'root_account_id' => e.root_account_id,
+              'limit_privileges_to_course_section' => e.limit_privileges_to_course_section,
+              'enrollment_state' => e.workflow_state,
+              'id' => e.id,
+              'user_id' => e.user_id,
+              'type' => e.type,
+              'role' => e.role.name,
+              'role_id' => e.role.id,
+              'course_section_id' => e.course_section_id,
+              'course_id' => e.course_id,
+              'user' => {
+                'name' => e.user.name,
+                'sortable_name' => e.user.sortable_name,
+                'short_name' => e.user.short_name,
+                'id' => e.user.id,
+                'created_at' => e.user.created_at.iso8601
+              },
+              'html_url' => course_user_url(@course, e.user),
+              'associated_user_id' => nil,
+              'updated_at' => e.updated_at.xmlschema,
+              'created_at' => e.created_at.xmlschema,
+              'start_at' => nil,
+              'end_at' => nil,
+              'last_activity_at' => nil,
+              'last_attended_at' => nil,
+              'total_activity_time' => 0
+            }
+            h['grades'] = {
+              'html_url' => course_student_grades_url(@course, e.user),
+              'final_score' => nil,
+              'current_score' => nil,
+              'final_grade' => nil,
+              'current_grade' => nil,
+            } if e.student?
+            h
+          end
+          link_header = response.headers['Link'].split(',')
+          expect(link_header[0]).to match /page=1&per_page=1/ # current page
+          expect(link_header[1]).to match /page=2&per_page=1/ # next page
+          expect(link_header[2]).to match /page=1&per_page=1/ # first page
+          expect(link_header[3]).to match /page=2&per_page=1/ # last page
+          expect(json).to eql [enrollments[0]]
 
-        json = api_call(:get, "#{@path}?page=#{bookmark}&per_page=1", @params.merge(:page => bookmark, :per_page => 1.to_param))
-        link_header = response.headers['Link'].split(',')
-        expect(link_header[0]).to match /page=#{bookmark}&per_page=1/ # current page
-        expect(link_header[1]).to match /page=first&per_page=1/ # first page
-        expect(link_header[2]).to match /page=#{bookmark}&per_page=1/ # last page
-        expect(json).to eql [enrollments[1]]
+          json = api_call(:get, "#{@path}?page=2&per_page=1", @params.merge(:page => 2.to_param, :per_page => 1.to_param))
+          link_header = response.headers['Link'].split(',')
+          expect(link_header[0]).to match /page=2&per_page=1/ # current page
+          expect(link_header[1]).to match /page=1&per_page=1/ # prev page
+          expect(link_header[2]).to match /page=1&per_page=1/ # first page
+          expect(link_header[3]).to match /page=2&per_page=1/ # last page
+          expect(json).to eql [enrollments[1]]
+        end
       end
 
-      it "should properly paginate with bookmarking not enabled" do
-        json = api_call(:get, "#{@path}?page=1&per_page=1", @params.merge(:page => 1.to_param, :per_page => 1.to_param))
-        enrollments = %w{observer student ta teacher}.inject([]) { |res, type|
-          res = res + @course.send("#{type}_enrollments").preload(:user)
-        }.map do |e|
-          h = {
-            'root_account_id' => e.root_account_id,
-            'limit_privileges_to_course_section' => e.limit_privileges_to_course_section,
-            'enrollment_state' => e.workflow_state,
-            'id' => e.id,
-            'user_id' => e.user_id,
-            'type' => e.type,
-            'role' => e.role.name,
-            'role_id' => e.role.id,
-            'course_section_id' => e.course_section_id,
-            'course_id' => e.course_id,
-            'user' => {
-              'name' => e.user.name,
-              'sortable_name' => e.user.sortable_name,
-              'short_name' => e.user.short_name,
-              'id' => e.user.id,
-              'created_at' => e.user.created_at.iso8601
-            },
-            'html_url' => course_user_url(@course, e.user),
-            'associated_user_id' => nil,
-            'updated_at' => e.updated_at.xmlschema,
-            'created_at' => e.created_at.xmlschema,
-            'start_at' => nil,
-            'end_at' => nil,
-            'last_activity_at' => nil,
-            'last_attended_at' => nil,
-            'total_activity_time' => 0
-          }
-          h['grades'] = {
-            'html_url' => course_student_grades_url(@course, e.user),
-            'final_score' => nil,
-            'current_score' => nil,
-            'final_grade' => nil,
-            'current_grade' => nil,
-          } if e.student?
-          h
-        end
-        link_header = response.headers['Link'].split(',')
-        expect(link_header[0]).to match /page=1&per_page=1/ # current page
-        expect(link_header[1]).to match /page=2&per_page=1/ # next page
-        expect(link_header[2]).to match /page=1&per_page=1/ # first page
-        expect(link_header[3]).to match /page=2&per_page=1/ # last page
-        expect(json).to eql [enrollments[0]]
+      shared_examples_for 'bookmarked pagination' do
+        it "should properly paginate" do
+          json = api_call(:get, "#{@path}?page=1&per_page=1", @params.merge(:page => 1.to_param, :per_page => 1.to_param))
+          enrollments = %w{observer student ta teacher}.inject([]) { |res, type|
+            res = res + @course.send("#{type}_enrollments").preload(:user)
+          }.map do |e|
+            h = {
+              'root_account_id' => e.root_account_id,
+              'limit_privileges_to_course_section' => e.limit_privileges_to_course_section,
+              'enrollment_state' => e.workflow_state,
+              'id' => e.id,
+              'user_id' => e.user_id,
+              'type' => e.type,
+              'role' => e.role.name,
+              'role_id' => e.role.id,
+              'course_section_id' => e.course_section_id,
+              'course_id' => e.course_id,
+              'user' => {
+                'name' => e.user.name,
+                'sortable_name' => e.user.sortable_name,
+                'short_name' => e.user.short_name,
+                'id' => e.user.id,
+                'created_at' => e.user.created_at.iso8601
+              },
+              'html_url' => course_user_url(@course, e.user),
+              'associated_user_id' => nil,
+              'updated_at' => e.updated_at.xmlschema,
+              'created_at' => e.created_at.xmlschema,
+              'start_at' => nil,
+              'end_at' => nil,
+              'last_activity_at' => nil,
+              'last_attended_at' => nil,
+              'total_activity_time' => 0
+            }
+            h['grades'] = {
+              'html_url' => course_student_grades_url(@course, e.user),
+              'final_score' => nil,
+              'current_score' => nil,
+              'final_grade' => nil,
+              'current_grade' => nil,
+            } if e.student?
+            h
+          end
+          link_header = response.headers['Link'].split(',')
+          expect(link_header[0]).to match /page=first&per_page=1/ # current page
+          md = link_header[1].match(/page=(bookmark.*)&per_page=1/)  # next page
+          bookmark = md[1]
+          expect(bookmark).to be_present
+          expect(link_header[2]).to match /page=first&per_page=1/ # first page
+          expect(json).to eql [enrollments[0]]
 
-        json = api_call(:get, "#{@path}?page=2&per_page=1", @params.merge(:page => 2.to_param, :per_page => 1.to_param))
-        link_header = response.headers['Link'].split(',')
-        expect(link_header[0]).to match /page=2&per_page=1/ # current page
-        expect(link_header[1]).to match /page=1&per_page=1/ # prev page
-        expect(link_header[2]).to match /page=1&per_page=1/ # first page
-        expect(link_header[3]).to match /page=2&per_page=1/ # last page
-        expect(json).to eql [enrollments[1]]
+          json = api_call(:get, "#{@path}?page=#{bookmark}&per_page=1", @params.merge(:page => bookmark, :per_page => 1.to_param))
+          link_header = response.headers['Link'].split(',')
+          expect(link_header[0]).to match /page=#{bookmark}&per_page=1/ # current page
+          expect(link_header[1]).to match /page=first&per_page=1/ # first page
+          expect(link_header[2]).to match /page=#{bookmark}&per_page=1/ # last page
+          expect(json).to eql [enrollments[1]]
+        end
+      end
+
+      context 'with normal settings' do
+        it_behaves_like 'numeric pagination'
+
+        context 'with developer key pagination override' do
+          before do
+            global_id = Shard.global_id_for(DeveloperKey.default.id)
+            Setting.set("pagination_override_key_list", global_id.to_s)
+          end
+
+          it_behaves_like 'numeric pagination'
+        end
+      end
+
+      context 'with bookmark flag enabled' do
+        before { Account.default.enable_feature!(:bookmarking_for_enrollments_index) }
+
+        it_behaves_like 'bookmarked pagination'
+
+        context 'with developer key pagination override' do
+          before do
+            global_id = Shard.global_id_for(DeveloperKey.default.id)
+            Setting.set("pagination_override_key_list", global_id.to_s)
+          end
+
+          it_behaves_like 'numeric pagination'
+        end
       end
     end
 

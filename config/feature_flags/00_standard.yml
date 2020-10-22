@@ -27,6 +27,24 @@ high_contrast:
       distinct and easier to identify. Note: Institution branding will be disabled.
   applies_to: User
   autoexpand: true
+disable_alert_timeouts:
+  state: allowed
+  display_name:
+    features.disable_alert_timeouts: Disable Alert Notification Timeouts
+  description:
+    disable_alert_timeouts_description: |-
+      Enabling this feature gets rid of the timeout for alert notifications that pop up, giving the
+      user as much time as they need to read the notification over and dismiss it when they are finished.
+  applies_to: User
+  autoexpand: true
+disable_celebrations:
+  state: hidden
+  display_name:
+    features.hide_celebrations: Disable Celebration Animations
+  description:
+    disable_celebrations_description: |-
+      Enabling this feature hides all celebration animations.
+  applies_to: User
 underline_all_links:
   state: allowed
   display_name: Underline Links
@@ -92,13 +110,6 @@ anonymous_instructor_annotations:
   description: Anonymize all instructor comments and annotations within DocViewer
   applies_to: Course
   root_opt_in: false
-new_gradebook:
-  state: allowed
-  display_name: New Gradebook
-  description: New Gradebook enables an early release of new Gradebook enhancements.
-  applies_to: Course
-  root_opt_in: true
-  custom_transition_proc: new_gradebook_custom_transition_hook
 final_grades_override:
   state: allowed
   display_name: Final Grade Override
@@ -115,12 +126,6 @@ k12:
     k12_description: |-
       Update the icons in the Global Navigation Menu that make more sense specifically in a K-12 environment.
   applies_to: RootAccount
-  root_opt_in: true
-recurring_calendar_events:
-  state: hidden
-  display_name: Duplicating Calendar Events
-  description: Allows the duplication of Calendar Events
-  applies_to: Course
   root_opt_in: true
 duplicate_modules:
   state: allowed
@@ -139,16 +144,6 @@ allow_opt_out_of_inbox:
       on the Inbox, and hide the Conversation's notification preferences.
   applies_to: RootAccount
   root_opt_in: true
-gradebook_list_students_by_sortable_name:
-  state: allowed
-  display_name:
-    features.gradebook_list_students_by_sortable_name: Gradebook - List Students by
-      Sortable Name
-  description:
-    enable_gradebook_list_students_by_sortable_name: List students by their sortable
-      names in the Gradebook. Sortable name defaults to 'Last Name, First Name' and
-      can be changed in settings.
-  applies_to: Course
 lti2_rereg:
   state: hidden
   display_name: LTI 2 Reregistration
@@ -199,12 +194,6 @@ notification_service:
   description: Allow the ability to send notifications through our dispatch queue
   applies_to: RootAccount
   root_opt_in: true
-better_scheduler:
-  state: hidden
-  display_name: Use the new scheduler
-  description: Uses the new scheduler and its functionality
-  applies_to: RootAccount
-  root_opt_in: true
 course_card_images:
   state: allowed
   display_name: Enable Dashboard Images for Courses
@@ -221,12 +210,14 @@ responsive_layout:
   environments:
     development:
       state: 'on'
-enable_i18n_features_in_outcomes_exports:
+disable_keyboard_shortcuts:
   state: hidden
-  display_name: Enable i18n features in outcomes exports
-  description: Enable byte_order_mark and semi_colon_field_separator user-level feature flags to be toggled
-    on or off for outcomes exports.
-  applies_to: RootAccount
+  display_name: Disable Keyboard Shortcuts
+  description: |-
+      Disable Canvas keyboard shortcuts. Some users using screenreaders or keyboard navigation
+      will have an improved experience with these shortcuts turned off.
+  applies_to: User
+  autoexpand: true
 include_byte_order_mark_in_gradebook_exports:
   state: allowed
   display_name: Include Byte-Order Mark in compatible spreadsheet exports
@@ -254,14 +245,6 @@ international_sms:
     from Canvas.
   applies_to: RootAccount
   root_opt_in: true
-course_user_search:
-  state: 'on'
-  display_name: Account Course and User Search
-  description: Updated UI for searching and displaying users and courses within an
-    account.
-  applies_to: Account
-  root_opt_in: true
-  touch_context: true
 conditional_release:
   state: allowed
   display_name: Mastery Paths
@@ -269,7 +252,8 @@ conditional_release:
     results.
   applies_to: Course
   root_opt_in: true
-  after_state_change_proc: conditional_release_after_state_change_hook
+  custom_transition_proc: conditional_release_transition_hook
+  after_state_change_proc: conditional_release_after_change_hook
 wrap_calendar_event_titles:
   state: allowed
   display_name: Wrap event titles in Calendar month view
@@ -295,12 +279,6 @@ new_user_tutorial:
   state: allowed
   display_name: New User Tutorial
   description: Provide tutorial information for new users in a flyout tray.
-  applies_to: RootAccount
-  root_opt_in: true
-student_planner:
-  state: 'on'
-  display_name: To Do List Dashboard
-  description: Provides users with a To Do List Dashboard option.
   applies_to: RootAccount
   root_opt_in: true
 rubric_criterion_range:
@@ -426,7 +404,8 @@ analytics_2:
   state: hidden
   applies_to: Course
   display_name: New Course and User Analytics
-  description: Show new analytics for course and user data
+  description: Show new analytics for course and user data. Data may take 24
+    hours to appear in New Analytics after setting this feature flag to ON.
   after_state_change_proc: analytics_2_after_state_change_hook
 new_gradebook_plagiarism_indicator:
   state: hidden
@@ -434,19 +413,25 @@ new_gradebook_plagiarism_indicator:
   display_name: New Gradebook Plagiarism Indicator
   description: Enables display of plagiarism reports and similarity scores in
     the New Gradebook submission tray.
-  environments:
-    production:
-      state: disabled
-unfavorite_course_from_dashboard:
-  state: hidden
-  applies_to: RootAccount
-  display_name: Course Favorites From Dashboard
-  description: This allows the user to unfavorite a course directly from its
-    dashboard card.
-  root_opt_in: true
 commons_favorites:
   state: hidden
   applies_to: RootAccount
   display_name: Import Commons Favorites
   description: If Commons is installed, allows importing favorited content
     items from within Canvas.
+featured_help_links:
+  state: hidden
+  applies_to: SiteAdmin
+  display_name: Featured Help Links
+  description: Allows Help Links to be tagged as Featured or New and
+    prominently displays the Featured Help Link in the Help Menu.
+timer_without_autosubmission:
+  display_name: Classic Quizzes Option for Timed Quizzes without Submission
+  description: Presents the quiz setting to avoid automatic submission of a timed quiz when the available time has ended.
+  applies_to: RootAccount
+  state: hidden
+recent_history:
+  state: allowed
+  applies_to: RootAccount
+  display_name: Recent History
+  description: Show a list of recently visited pages in the Canvas global navigation

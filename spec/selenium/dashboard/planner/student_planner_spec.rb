@@ -25,7 +25,6 @@ describe "student planner" do
   include PlannerPageObject
 
   before :once do
-    Account.default.enable_feature!(:student_planner)
     course_with_teacher(active_all: true, new_user: true, user_name: 'PlannerTeacher', course_name: 'Planner Course')
     @student1 = User.create!(name: 'Student 1')
     @course.enroll_student(@student1).accept!
@@ -45,7 +44,7 @@ describe "student planner" do
     switch_to_dashcard_view
 
     expect(dashboard_card_container).to contain_css("[aria-label='#{@course.name}']")
-    expect(dashboard_card_header_content).to contain_css("h2[title='#{@course.name}']")
+    expect(dashboard_card_header_content).to contain_css("h3[title='#{@course.name}']")
   end
 
   it "shows and navigates to announcements page from student planner", priority: "1", test_id: 3259302 do

@@ -244,13 +244,15 @@ class CollaborationsController < ApplicationController
       }
     end
 
+    js_env :CREATE_PERMISSION => @context.grants_right?(@current_user, :create_collaborations)
+
     set_tutorial_js_env
 
     render :html => "".html_safe, :layout => true
   end
 
   def create
-    return unless authorized_action(@context.collaborations.build, @current_user, :create)
+    return unless authorized_action(@context.collaborations.build, @current_user, :create) && authorized_action(@context, @current_user, :create_collaborations)
     content_item = params['contentItems'] ? JSON.parse(params['contentItems']).first : nil
     if content_item
       @collaboration = collaboration_from_content_item(content_item)
@@ -375,7 +377,10 @@ class CollaborationsController < ApplicationController
   # @returns [User]
   def potential_collaborators
     return unless authorized_action(@context, @current_user, :read_roster)
-    scope = @context.potential_collaborators.order(:sortable_name)
+
+    scope = @context.is_a?(Course) ? @context.potential_collaborators_for(@current_user) : @context.potential_collaborators
+    scope = scope.order(:sortable_name)
+
     users = Api.paginate(scope, self, polymorphic_url([:api_v1, @context, :potential_collaborators]))
     render :json => users.map { |u| user_json(u, @current_user, session) }
   end

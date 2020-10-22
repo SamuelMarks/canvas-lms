@@ -40,7 +40,7 @@ export default function RestoreAutoSaveModal(props) {
       data-mce-component
       label={formatMessage('Restore auto-save?')}
       open={props.open}
-      shouldCloseOnDocumentClick
+      shouldCloseOnDocumentClick={false}
       shouldReturnFocus
       size="medium"
       onDismiss={props.onNo}
@@ -70,6 +70,7 @@ export default function RestoreAutoSaveModal(props) {
             as="div"
             dangerouslySetInnerHTML={{__html: props.savedContent}}
             padding="0 x-small"
+            overflowX="auto"
           />
         </ToggleGroup>
       </Modal.Body>

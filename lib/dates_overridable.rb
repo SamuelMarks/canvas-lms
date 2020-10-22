@@ -24,8 +24,8 @@ module DatesOverridable
   class NotOverriddenError < RuntimeError; end
 
   def self.included(base)
-    base.has_many :assignment_overrides, :dependent => :destroy
-    base.has_many :active_assignment_overrides, -> { where(workflow_state: 'active') }, class_name: 'AssignmentOverride'
+    base.has_many :assignment_overrides, :dependent => :destroy, inverse_of: base.table_name.singularize
+    base.has_many :active_assignment_overrides, -> { where(workflow_state: 'active') }, class_name: 'AssignmentOverride', inverse_of: base.table_name.singularize
     base.has_many :assignment_override_students, -> { where(workflow_state: 'active') }, :dependent => :destroy
     base.has_many :all_assignment_override_students, class_name: 'AssignmentOverrideStudent', :dependent => :destroy
 
@@ -214,7 +214,7 @@ module DatesOverridable
       [ due_at.present? ? CanvasSort::First : CanvasSort::Last, due_at.presence || CanvasSort::First ]
     end
 
-    dates.map { |h| h.slice(:id, :due_at, :unlock_at, :lock_at, :title, :base) }
+    dates.map { |h| h.slice(:id, :due_at, :unlock_at, :lock_at, :title, :base, :set_type, :set_id) }
   end
 
   def due_date_hash
@@ -228,6 +228,8 @@ module DatesOverridable
     if @applied_overrides && override = @applied_overrides.find { |o| o.due_at == due_at }
       hash[:override] = override
       hash[:title] = override.title
+      hash[:set_type] = override.set_type
+      hash[:set_id] = override.set_id
     end
 
     hash
@@ -273,6 +275,7 @@ module DatesOverridable
   module ClassMethods
     def due_date_compare_value(date)
       # due dates are considered equal if they're the same up to the minute
+      return nil if date.nil?
       date.to_i / 60
     end
 

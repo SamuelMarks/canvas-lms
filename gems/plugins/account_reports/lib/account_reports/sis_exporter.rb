@@ -473,7 +473,7 @@ module AccountReports
         # the "start" parameter is purely to
         # force activerecord to use LIMIT/OFFSET
         # rather than a cursor for this iteration
-        # because it often is big enough that the slave
+        # because it often is big enough that the secondary
         # kills it mid-run (http://www.postgresql.org/docs/9.0/static/hot-standby.html)
         enrol.preload(:root_account, :sis_pseudonym).find_in_batches(start: 0) do |batch|
           users = batch.map {|e| User.new(id: e.user_id)}.compact
@@ -840,7 +840,7 @@ module AccountReports
 
     def xlist_query_options(xl)
       xl = xl.where.not(course_sections: {sis_batch_id: nil}) if @created_by_sis
-      xl = xl.where.not(courses: {sis_source_id: nil}, course_sections: {sis_source_id: nil}) if @sis_format
+      xl = xl.where.not(courses: {sis_source_id: nil}).where.not(course_sections: {sis_source_id: nil}) if @sis_format
 
       if @include_deleted
         xl.where!("(courses.workflow_state<>'deleted'

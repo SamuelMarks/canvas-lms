@@ -31,7 +31,6 @@ class PageView < ActiveRecord::Base
 
   CONTEXT_TYPES = %w{Course Account Group User UserProfile}.freeze
 
-  attr_accessor :generated_by_hand
   attr_accessor :is_update
 
   # note that currently we never query page views from the perspective of the course;
@@ -47,7 +46,7 @@ class PageView < ActiveRecord::Base
       p.http_method = request.request_method.downcase
       p.controller = request.path_parameters[:controller]
       p.action = request.path_parameters[:action]
-      p.session_id = request.session_options[:id].to_s.force_encoding(Encoding::UTF_8).presence
+      p.session_id = request.session_options[:id].to_s.dup.force_encoding(Encoding::UTF_8).presence
       p.user_agent = request.user_agent
       p.remote_ip = request.remote_ip
       p.interaction_seconds = 5
@@ -150,6 +149,7 @@ class PageView < ActiveRecord::Base
   end
 
   EventStream = EventStream::Stream.new do
+    backend_strategy :cassandra
     database -> { Canvas::Cassandra::DatabaseBuilder.from_config(:page_views) }
     table :page_views
     id_column :request_id

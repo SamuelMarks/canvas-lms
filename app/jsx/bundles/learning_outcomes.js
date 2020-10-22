@@ -34,6 +34,7 @@ $el.html(
   browserTemplate({
     canManageOutcomes: ENV.PERMISSIONS.manage_outcomes,
     canManageRubrics: ENV.PERMISSIONS.manage_rubrics,
+    canImportOutcomes: ENV.PERMISSIONS.import_outcomes,
     contextUrlRoot: ENV.CONTEXT_URL_ROOT
   })
 )

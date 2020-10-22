@@ -50,6 +50,11 @@
 #           "example": "",
 #           "type": "string"
 #         },
+#         "current_points": {
+#           "description": "The total points the user has earned in the class. Only included if user has permissions to view this score and 'current_points' is passed in the request's 'include' parameter.",
+#           "example": 150,
+#           "type": "integer"
+#         },
 #         "unposted_current_grade": {
 #           "description": "The user's current grade in the class including muted/unposted assignments. Only included if user has permissions to view this grade, typically teachers, TAs, and admins.",
 #           "example": "",
@@ -69,6 +74,11 @@
 #           "description": "The user's final score for the class including muted/unposted assignments. Only included if user has permissions to view this score, typically teachers, TAs, and admins..",
 #           "example": "",
 #           "type": "string"
+#         },
+#         "unposted_current_points": {
+#           "description": "The total points the user has earned in the class, including muted/unposted assignments. Only included if user has permissions to view this score (typically teachers, TAs, and admins) and 'current_points' is passed in the request's 'include' parameter.",
+#           "example": 150,
+#           "type": "integer"
 #         }
 #       }
 #     }
@@ -358,9 +368,12 @@ class EnrollmentsApiController < ApplicationController
   #   querying a user's enrollments (either via user_id argument or via user
   #   enrollments endpoint): +current_and_invited+, +current_and_future+, +current_and_concluded+
   #
-  # @argument include[] [String, "avatar_url"|"group_ids"|"locked"|"observed_users"|"can_be_removed"|"uuid"]
+  # @argument include[] [String, "avatar_url"|"group_ids"|"locked"|"observed_users"|"can_be_removed"|"uuid"|"current_points"]
   #   Array of additional information to include on the enrollment or user records.
-  #   "avatar_url" and "group_ids" will be returned on the user record.
+  #   "avatar_url" and "group_ids" will be returned on the user record. If "current_points"
+  #   is specified, the fields "current_points" and (if the caller has
+  #   permissions to manage grades) "unposted_current_points" will be included
+  #   in the "grades" hash for student enrollments.
   #
   # @argument user_id [String]
   #   Filter by user_id (only valid for course or section enrollment
@@ -403,14 +416,17 @@ class EnrollmentsApiController < ApplicationController
   #
   # @returns [Enrollment]
   def index
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       endpoint_scope = (@context.is_a?(Course) ? (@section.present? ? "section" : "course") : "user")
 
       return unless enrollments = @context.is_a?(Course) ?
                                     course_index_enrollments :
                                     user_index_enrollments
 
-      use_bookmarking = @domain_root_account&.feature_enabled?(:bookmarking_for_enrollments_index)
+      # a few specific developer keys temporarily need bookmarking disabled, see INTEROP-5326
+      pagination_override_key_list = Setting.get("pagination_override_key_list", "").split(',').map(&:to_i)
+      use_numeric_pagination_override = pagination_override_key_list.include?(@access_token&.global_developer_key_id)
+      use_bookmarking = @domain_root_account&.feature_enabled?(:bookmarking_for_enrollments_index) && !use_numeric_pagination_override
       enrollments = use_bookmarking ?
         enrollments.joins(:user).select("enrollments.*, users.sortable_name AS sortable_name") :
         enrollments.joins(:user).select("enrollments.*").
@@ -486,8 +502,8 @@ class EnrollmentsApiController < ApplicationController
       user_json_preloads(enrollments.map(&:user), false, {group_memberships: include_group_ids})
 
       render :json => enrollments.map { |e|
-        enrollment_json(e, @current_user, session, includes,
-                        grading_period: grading_period)
+        enrollment_json(e, @current_user, session, includes: includes,
+                        opts: { grading_period: grading_period })
       }
     end
   end
@@ -499,7 +515,7 @@ class EnrollmentsApiController < ApplicationController
   #  The ID of the enrollment object
   # @returns Enrollment
   def show
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       enrollment = @context.all_enrollments.find(params[:id])
       if enrollment.user_id == @current_user.id || authorized_action(@context, @current_user, :read_roster)
         render :json => enrollment_json(enrollment, @current_user, session)
@@ -509,6 +525,12 @@ class EnrollmentsApiController < ApplicationController
 
   # @API Enroll a user
   # Create a new user enrollment for a course or section.
+  #
+  # @argument enrollment[start_at] [DateTime]
+  #   The start time of the enrollment, in ISO8601 format. e.g. 2012-04-18T23:08:51Z
+  #
+  # @argument enrollment[end_at] [DateTime]
+  #   The end time of the enrollment, in ISO8601 format. e.g. 2012-04-18T23:08:51Z
   #
   # @argument enrollment[user_id] [Required, String]
   #   The ID of the user to be enrolled in the course.
@@ -604,7 +626,7 @@ class EnrollmentsApiController < ApplicationController
         role = @context.account.get_course_role_by_name(role_name)
       else
         type = "StudentEnrollment" if type.blank?
-        role = Role.get_built_in_role(type)
+        role = Role.get_built_in_role(type, root_account_id: @context.root_account_id)
         if role.nil? || !role.course_role?
           errors << @@errors[:bad_type]
         end
@@ -943,12 +965,6 @@ class EnrollmentsApiController < ApplicationController
       role_ids = Array(role_ids).map(&:to_i)
       condition = 'enrollments.role_id IN (:role_ids)'
       replacements[:role_ids] = role_ids
-
-      built_in_roles = role_ids.map{|r_id| Role.built_in_roles_by_id[r_id]}.compact
-      if built_in_roles.present?
-        condition = "(#{condition} OR (enrollments.role_id IS NULL AND enrollments.type IN (:built_in_role_types)))"
-        replacements[:built_in_role_types] = built_in_roles.map(&:name)
-      end
       clauses << condition
     elsif type.present?
       clauses << 'enrollments.type IN (:type)'
@@ -976,7 +992,7 @@ class EnrollmentsApiController < ApplicationController
   def enrollment_states_for_state_param
     states = Array(params[:state]).uniq
     states.concat(%w(active invited)) if states.delete 'current_and_invited'
-    states.concat(%w(active invited creation_pending)) if states.delete 'current_and_future'
+    states.concat(%w(active invited creation_pending pending_active pending_invited)) if states.delete 'current_and_future'
     states.concat(%w(active completed)) if states.delete 'current_and_concluded'
     states.uniq
   end

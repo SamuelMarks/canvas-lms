@@ -40,7 +40,7 @@ class AssignmentsController < ApplicationController
   before_action :normalize_title_param, :only => [:new, :edit]
 
   def index
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       return redirect_to(dashboard_url) if @context == @current_user
 
       if authorized_action(@context, @current_user, :read)
@@ -61,8 +61,8 @@ class AssignmentsController < ApplicationController
 
         set_js_assignment_data
         set_tutorial_js_env
+        set_section_list_js_env if @domain_root_account.feature_enabled?(:assignment_bulk_edit)
         hash = {
-          COURSE_ID: @context.id.to_s,
           WEIGHT_FINAL_GRADES: @context.apply_group_weights?,
           POST_TO_SIS_DEFAULT: @context.account.sis_default_grade_export[:value],
           SIS_INTEGRATION_SETTINGS_ENABLED: sis_integration_settings_enabled,
@@ -126,7 +126,7 @@ class AssignmentsController < ApplicationController
   end
 
   def show
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       @assignment ||= @context.assignments.find(params[:id])
 
       if @assignment.deleted?
@@ -149,7 +149,7 @@ class AssignmentsController < ApplicationController
         @unlocked = !@locked || @assignment.grants_right?(@current_user, session, :update)
 
         unless @assignment.new_record? || (@locked && !@locked[:can_view])
-          Shackles.activate(:master) do
+          GuardRail.activate(:primary) do
             @assignment.context_module_action(@current_user, :read)
           end
         end
@@ -161,7 +161,7 @@ class AssignmentsController < ApplicationController
             !@current_user_submission.graded? &&
             !@current_user_submission.submission_type
           if @current_user_submission
-            Shackles.activate(:master) do
+            GuardRail.activate(:primary) do
               @current_user_submission.send_later(:context_module_action)
             end
           end
@@ -183,7 +183,7 @@ class AssignmentsController < ApplicationController
           eligible_categories = eligible_categories.where(id: @assignment.group_category) if @assignment.group_category.present?
           env[:group_categories] = group_categories_json(eligible_categories, @current_user, session, {include: ['groups']})
 
-          selected_group_id = @current_user.preferences.dig(:gradebook_settings, @context.id, 'filter_rows_by', 'student_group_id')
+          selected_group_id = @current_user.get_preference(:gradebook_settings, @context.global_id)&.dig('filter_rows_by', 'student_group_id')
           # If this is a group assignment and we had previously filtered by a
           # group that isn't part of this assignment's group set, behave as if
           # no group is selected.
@@ -262,7 +262,9 @@ class AssignmentsController < ApplicationController
           EXTERNAL_TOOLS: external_tools_json(@external_tools, @context, @current_user, session),
           PERMISSIONS: permissions,
           ROOT_OUTCOME_GROUP: outcome_group_json(@context.root_outcome_group, @current_user, session),
-          SIMILARITY_PLEDGE: @similarity_pledge
+          SIMILARITY_PLEDGE: @similarity_pledge,
+          CONFETTI_ENABLED: @domain_root_account&.feature_enabled?(:confetti_for_assignments),
+          USER_ASSET_STRING: @current_user&.asset_string,
         })
 
         set_master_course_js_env_data(@assignment, @context)
@@ -279,7 +281,7 @@ class AssignmentsController < ApplicationController
         # this will set @user_has_google_drive
         user_has_google_drive
 
-        @can_direct_share = @context.root_account.feature_enabled?(:direct_share) && @assignment.grants_right?(@current_user, session, :update)
+        @can_direct_share = @context.root_account.feature_enabled?(:direct_share) && @context.grants_right?(@current_user, session, :read_as_admin)
         @assignment_menu_tools = external_tools_display_hashes(:assignment_menu)
 
         @mark_done = MarkDonePresenter.new(self, @context, params["module_item_id"], @current_user, @assignment)
@@ -294,7 +296,8 @@ class AssignmentsController < ApplicationController
 
         render locals: {
           eula_url: tool_eula_url,
-          show_moderation_link: @assignment.moderated_grading? && @assignment.permits_moderation?(@current_user)
+          show_moderation_link: @assignment.moderated_grading? && @assignment.permits_moderation?(@current_user),
+          show_confetti: params[:confetti] == "true" && @domain_root_account&.feature_enabled?(:confetti_for_assignments)
         }, stream: can_stream_template?
       end
     end
@@ -462,8 +465,6 @@ class AssignmentsController < ApplicationController
 
       hash = {
         CONTEXT_ACTION_SOURCE: :syllabus,
-        # don't check for student enrollments because we want this to show for the teacher as well
-        STUDENT_PLANNER_ENABLED: @domain_root_account&.feature_enabled?(:student_planner)
       }
       append_sis_data(hash)
       js_env(hash)
@@ -593,6 +594,7 @@ class AssignmentsController < ApplicationController
 
       post_to_sis = Assignment.sis_grade_export_enabled?(@context)
       hash = {
+        ROOT_OUTCOME_GROUP: outcome_group_json(@context.root_outcome_group, @current_user, session),
         ASSIGNMENT_GROUPS: json_for_assignment_groups,
         ASSIGNMENT_INDEX_URL: polymorphic_url([@context, :assignments]),
         ASSIGNMENT_OVERRIDES: assignment_overrides_json(
@@ -612,16 +614,7 @@ class AssignmentsController < ApplicationController
         ),
         POST_TO_SIS: post_to_sis,
         SIS_NAME: AssignmentUtil.post_to_sis_friendly_name(@context),
-        SECTION_LIST: @context.course_sections.active.map do |section|
-          {
-            id: section.id,
-            name: section.name,
-            start_at: section.start_at,
-            end_at: section.end_at,
-            override_course_and_term_dates: section.restrict_enrollments_to_section_dates
-          }
-        end,
-        VALID_DATE_RANGE: CourseDateRange.new(@context),
+        VALID_DATE_RANGE: CourseDateRange.new(@context)
       }
 
       add_crumb(@assignment.title, polymorphic_url([@context, @assignment])) unless @assignment.new_record?
@@ -651,6 +644,11 @@ class AssignmentsController < ApplicationController
       hash[:MODERATED_GRADING_ENABLED] = @context.feature_enabled?(:moderated_grading)
       hash[:ANONYMOUS_INSTRUCTOR_ANNOTATIONS_ENABLED] = @context.feature_enabled?(:anonymous_instructor_annotations)
 
+      hash[:SUBMISSION_TYPE_SELECTION_TOOLS] =
+        @domain_root_account&.feature_enabled?(:submission_type_tool_placement) ?
+        external_tools_display_hashes(:submission_type_selection, @context,
+          [:base_title, :external_url, :selection_width, :selection_height]) : []
+
       append_sis_data(hash)
       if context.is_a?(Course)
         hash[:allow_self_signup] = true # for group creation
@@ -659,6 +657,7 @@ class AssignmentsController < ApplicationController
       js_env(hash)
       conditional_release_js_env(@assignment)
       set_master_course_js_env_data(@assignment, @context)
+      set_section_list_js_env
       render :edit
     end
   end
@@ -869,5 +868,17 @@ class AssignmentsController < ApplicationController
   def on_quizzes_page?
     @context.root_account.feature_enabled?(:newquizzes_on_quiz_page) && \
       @context.feature_enabled?(:quizzes_next) && @context.quiz_lti_tool.present?
+  end
+
+  def set_section_list_js_env
+    js_env SECTION_LIST: @context.course_sections.active.map { |section|
+      {
+        id: section.id,
+        name: section.name,
+        start_at: section.start_at,
+        end_at: section.end_at,
+        override_course_and_term_dates: section.restrict_enrollments_to_section_dates
+      }
+    }
   end
 end

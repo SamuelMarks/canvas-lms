@@ -57,7 +57,7 @@ const rolesCollection = new RolesCollection(
   Array.from(ENV.ALL_ROLES).map(attributes => new Role(attributes))
 )
 const course = new Model(ENV.course)
-const inputFilterView = new InputFilterView({collection: users})
+const inputFilterView = new InputFilterView({collection: users, minLength: 2})
 const usersView = new PaginatedCollectionView({
   collection: users,
   itemView: RosterUserView,
@@ -67,6 +67,7 @@ const usersView = new PaginatedCollectionView({
   canViewLoginIdColumn: ENV.permissions.view_user_logins,
   canViewSisIdColumn: ENV.permissions.read_sis,
   buffer: 1000,
+  hideSectionsOnCourseUsersPage: ENV.course.hideSectionsOnCourseUsersPage,
   template: rosterUsersTemplate
 })
 const roleSelectView = new RoleSelectView({

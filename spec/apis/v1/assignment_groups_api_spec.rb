@@ -348,6 +348,7 @@ describe AssignmentGroupsController, type: :request do
   context "grading periods" do
     before :once do
       setup_grading_periods
+      @course.enroll_student(User.create!)
     end
 
     describe "#index" do
@@ -480,10 +481,10 @@ describe AssignmentGroupsController, type: :request do
     a1.reload
 
     json = api_call(:get,
-          "/api/v1/courses/#{@course.id}/assignment_groups.json?include[]=assignments&include[]=all_dates",
+          "/api/v1/courses/#{@course.id}/assignment_groups.json?include[]=assignments&include[]=all_dates&include[]=can_edit",
           { controller: 'assignment_groups', action: 'index',
             format: 'json', course_id: @course.id.to_s,
-            include: ['assignments', 'all_dates'] })
+            include: ['assignments', 'all_dates', 'can_edit'] })
 
     expected = [
       {
@@ -496,8 +497,8 @@ describe AssignmentGroupsController, type: :request do
         'integration_data' => {},
         'sis_source_id' => nil,
         'assignments' => [
-          controller.assignment_json(a1, @user,session, include_all_dates: true).as_json,
-          controller.assignment_json(a2, @user,session, include_all_dates: true).as_json
+          controller.assignment_json(a1, @user,session, include_all_dates: true, include_can_edit: true).as_json,
+          controller.assignment_json(a2, @user,session, include_all_dates: true, include_can_edit: true).as_json
         ]
       }
     ]
@@ -550,6 +551,7 @@ describe AssignmentGroupsController, type: :request do
              format: 'json',
              course_id: @course.id.to_s,
              include: ['assignments'])
+    assert_status(200)
   end
 
   it "should not return unpublished assignments to students" do
@@ -675,6 +677,7 @@ describe AssignmentGroupsApiController, type: :request do
     end
 
     it 'should only return assignments in the given grading period with MGP on' do
+      @course.enroll_student(User.create!)
       setup_grading_periods
 
       json = api_call(:get, "/api/v1/courses/#{@course.id}/assignment_groups/#{@group1.id}?include[]=assignments&grading_period_id=#{@gp_future.id}",
@@ -1083,6 +1086,26 @@ describe AssignmentGroupsApiController, type: :request do
       group3.reload
       expect(group3.assignments.count).to eq 4
       expect(@assignment_group.reload.workflow_state).to eq 'deleted'
+    end
+
+    it 'should recalculate results if move_assignments_to is provided' do
+      @course.assignment_groups.create!(name: 'Another group', position: 2)
+      group3 = @course.assignment_groups.create!(name: 'Yet Another group', position: 3)
+
+      @course.assignments.create!(title: "test1", assignment_group: @assignment_group, points_possible: 10)
+      @course.assignments.create!(title: "test2", assignment_group: @assignment_group, points_possible: 12)
+
+      expect_any_instance_of(Course).to receive(:recompute_student_scores).once
+
+      api_call(:delete, "/api/v1/courses/#{@course.id}/assignment_groups/#{@assignment_group.id}",
+        {
+          controller: 'assignment_groups_api',
+          action: 'destroy',
+          format: 'json',
+          course_id: @course.id.to_s,
+          assignment_group_id: @assignment_group.id.to_s
+        },
+        {move_assignments_to: group3.id})
     end
   end
 end

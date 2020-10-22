@@ -281,4 +281,21 @@ describe LearningOutcomeGroup do
       expect(active_child_groups).to be_empty
     end
   end
+
+  context 'root account resolution' do
+    it 'sets root_account_id using Account context' do
+      group = LearningOutcomeGroup.create!(title: 'group', context: Account.default)
+      expect(group.root_account).to eq Account.default
+    end
+
+    it 'sets root_account_id using Course context' do
+      group = @course.learning_outcome_groups.create!(title: 'group')
+      expect(group.root_account).to eq @course.root_account
+    end
+
+    it 'sets root_acount_id 0 when global (context is nil)' do
+      group = LearningOutcomeGroup.create!(title: 'group', context_id: nil)
+      expect(group.root_account_id).to eq 0
+    end
+  end
 end

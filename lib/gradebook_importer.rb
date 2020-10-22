@@ -60,9 +60,11 @@ class GradebookImporter
     @attachment = attachment
     @progress = progress
 
-    @visible_assignments = AssignmentStudentVisibility.visible_assignment_ids_in_course_by_user(
-      course_id: @context.id, user_id: @context.all_students.pluck(:id)
-    )
+    GuardRail.activate(:secondary) do
+      @visible_assignments = AssignmentStudentVisibility.visible_assignment_ids_in_course_by_user(
+        course_id: @context.id, user_id: @context.all_students.pluck(:id)
+      )
+    end
   end
 
   CSV::Converters[:nil] = lambda do |e|
@@ -149,7 +151,7 @@ class GradebookImporter
 
     @original_submissions = @context.submissions
       .preload(:grading_period, assignment: { context: :account })
-      .select(['submissions.id', :assignment_id, :user_id, :grading_period_id, :score, :excused, :cached_due_date, 'submissions.updated_at'])
+      .select(['submissions.id', :assignment_id, :user_id, :grading_period_id, :score, :excused, :cached_due_date, :course_id, 'submissions.updated_at'])
       .where(assignment_id: assignment_ids, user_id: user_ids)
       .map do |submission|
         is_gradeable = gradeable?(submission: submission, is_admin: is_admin)
@@ -301,7 +303,7 @@ class GradebookImporter
 
   def process_custom_column_headers(row)
     row.each_with_index do |header_column, index|
-      next if GRADEBOOK_IMPORTER_RESERVED_NAMES.include?(header_column) && Account.site_admin.feature_enabled?(:gradebook_reserved_importer_bugfix)
+      next if GRADEBOOK_IMPORTER_RESERVED_NAMES.include?(header_column)
       gradebook_column = custom_gradebook_columns.detect { |column| column.title == header_column }
       next if gradebook_column.blank?
 
@@ -480,7 +482,7 @@ class GradebookImporter
     importer_submissions = []
     @assignments.each_with_index do |assignment, idx|
       assignment_id = assignment.new_record? ? assignment.id : assignment.previous_id
-      grade = row[idx + @student_columns]
+      grade = row[idx + @student_columns]&.strip
       if !assignment_visible_to_student(student, assignment, assignment_id, @visible_assignments)
         grade = ''
       end
@@ -533,11 +535,7 @@ class GradebookImporter
   protected
 
   def custom_gradebook_columns
-    @custom_gradebook_columns ||= if Account.site_admin.feature_enabled?(:gradebook_reserved_importer_bugfix)
-      @context.custom_gradebook_columns.active.to_a
-    else
-      @context.custom_gradebook_columns.to_a
-    end
+    @custom_gradebook_columns ||= @context.custom_gradebook_columns.active.to_a
   end
 
   def identify_delimiter(rows)
@@ -606,7 +604,7 @@ class GradebookImporter
     # using "foreach" rather than "parse" processes a chunk of the
     # file at a time rather than loading the whole file into memory
     # at once, a boon for memory consumption
-    CSV.foreach(csv_file.path, csv_parse_options) do |row|
+    CSV.foreach(csv_file.path, **csv_parse_options) do |row|
       yield row
     end
   end

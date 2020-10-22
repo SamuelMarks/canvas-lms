@@ -27,7 +27,8 @@ import {
   getLinkContentFromEditor,
   isFileLink,
   isImageEmbed,
-  isVideoElement
+  isVideoElement,
+  findVideoPlayerIframe
 } from '../ContentSelection'
 import FakeEditor from './FakeEditor'
 
@@ -68,11 +69,8 @@ describe('RCE > Plugins > Shared > Content Selection', () => {
       })
 
       it('finds the selected text', () => {
-        // a bit contrived, but proves we find the selected text
-        // if there is some w/in the link
-        editor.selection.getContent = () => 'foo'
         const content = getContentFromElement($element, editor)
-        expect(content.text).toEqual('foo')
+        expect(content.text).toEqual('Syllabus.doc')
       })
 
       it('includes the url of the link', () => {
@@ -102,9 +100,31 @@ describe('RCE > Plugins > Shared > Content Selection', () => {
         expect(getContentFromElement($element, editor).type).toEqual(LINK_TYPE)
       })
 
+      it('does not explode when the hostname has bad unicode', () => {
+        $element.href = 'http://invalid%ffhostname.com/'
+        expect(getContentFromElement($element, editor).type).toEqual(LINK_TYPE)
+      })
+
+      it('works with a relative path', () => {
+        $element.href = '/courses/1201/files/8880/download'
+        expect(getContentFromElement($element, editor).type).toEqual(FILE_LINK_TYPE)
+      })
+
       it('returns content of type "none" when the anchor has no href attribute', () => {
         $element.removeAttribute('href')
         expect(getContentFromElement($element, editor).type).toEqual(NONE_TYPE)
+      })
+
+      it('indicates the link is previewable if it contains the "data-canvas-previewable" attribute', () => {
+        expect(getContentFromElement($element, editor).isPreviewable).toEqual(false)
+        $element.setAttribute('data-canvas-previewable', true)
+        expect(getContentFromElement($element, editor).isPreviewable).toEqual(true)
+      })
+
+      it('indicates the link is previewable if it contains the "instructure_scribd_file" class name', () => {
+        expect(getContentFromElement($element, editor).isPreviewable).toEqual(false)
+        $element.classList.add('instructure_scribd_file')
+        expect(getContentFromElement($element, editor).isPreviewable).toEqual(true)
       })
     })
 
@@ -167,26 +187,18 @@ describe('RCE > Plugins > Shared > Content Selection', () => {
       })
 
       describe('.isDecorativeImage', () => {
-        describe('when "data-is-decorative" is "true" on the image element', () => {
+        describe('when "role" is "presentation" on the image element', () => {
           beforeEach(() => {
-            $element.setAttribute('data-is-decorative', true)
+            $element.setAttribute('role', 'presentation')
           })
 
           it('is true when the image has no alt text', () => {
             $element.alt = ''
             expect(getContentFromElement($element, editor).isDecorativeImage).toEqual(true)
           })
-
-          it('is false when the image still has alt text', () => {
-            expect(getContentFromElement($element, editor).isDecorativeImage).toEqual(false)
-          })
         })
 
-        describe('when "data-is-decorative" is "false" on the image element', () => {
-          beforeEach(() => {
-            $element.setAttribute('data-is-decorative', false)
-          })
-
+        describe('when "role" is not "presentation" on the image element', () => {
           it('is false when the image has no alt text', () => {
             $element.alt = ''
             expect(getContentFromElement($element, editor).isDecorativeImage).toEqual(false)
@@ -285,6 +297,30 @@ describe('RCE > Plugins > Shared > Content Selection', () => {
       editor.setSelectedNode($selectedNode)
       const content = getLinkContentFromEditor(editor)
       expect(content.type).toEqual(LINK_TYPE)
+    })
+  })
+
+  describe('findVideoPlayerIframe', () => {
+    let wrapper, videoIframe, shim
+    beforeEach(() => {
+      wrapper = document.createElement('span')
+      videoIframe = document.createElement('iframe')
+      shim = document.createElement('span')
+      shim.setAttribute('class', 'mce-shim')
+      wrapper.appendChild(videoIframe)
+      wrapper.appendChild(shim)
+    })
+    it('returns the iframe if given the video iframe', () => {
+      const result = findVideoPlayerIframe(videoIframe)
+      expect(result).toEqual(videoIframe)
+    })
+    it('returns the iframe if given the tinymce wrapper span', () => {
+      const result = findVideoPlayerIframe(wrapper)
+      expect(result).toEqual(videoIframe)
+    })
+    it('returns the iframe if given the shim', () => {
+      const result = findVideoPlayerIframe(shim)
+      expect(result).toEqual(videoIframe)
     })
   })
 

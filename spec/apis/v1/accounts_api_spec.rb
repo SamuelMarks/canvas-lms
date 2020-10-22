@@ -600,6 +600,38 @@ describe "Accounts API", type: :request do
         expect(@a1.default_group_storage_quota_mb).to eq 42
       end
     end
+
+    describe "privacy settings" do
+      let(:account) { @a1 }
+      let(:site_admin) { site_admin_user }
+      let(:payload) {
+        {
+          account: {
+            settings: {
+              enable_fullstory: false,
+              enable_google_analytics: false,
+            }
+          }
+        }
+      }
+
+      it 'ignores changes made through the API' do
+        user_session(site_admin)
+
+        expect {
+          api_call(:put, "/api/v1/accounts/#{account.to_param}", {
+            controller: 'accounts',
+            action: 'update',
+            id: account.to_param,
+            format: 'json'
+          }, payload)
+        }.to change { response&.status }.to(200).and not_change {
+          account.reload.settings.fetch(:enable_fullstory, true)
+        }.and not_change {
+          account.reload.settings.fetch(:enable_google_analytics, true)
+        }
+      end
+    end
   end
 
   it "should find accounts by sis in only this root account" do
@@ -665,10 +697,11 @@ describe "Accounts API", type: :request do
     it "should honor the includes[]" do
       @c1 = course_model(:name => 'c1', :account => @a1, :root_account => @a1)
       @a1.account_users.create!(user: @user)
-      json = api_call(:get, "/api/v1/accounts/#{@a1.id}/courses?include[]=storage_quota_used_mb",
+      json = api_call(:get, "/api/v1/accounts/#{@a1.id}/courses?include[]=storage_quota_used_mb&include[]=account_name",
                       { :controller => 'accounts', :action => 'courses_api', :account_id => @a1.to_param,
-                        :format => 'json', :include => ['storage_quota_used_mb'] }, {})
+                        :format => 'json', :include => ['storage_quota_used_mb', 'account_name'] }, {})
       expect(json[0].has_key?("storage_quota_used_mb")).to be_truthy
+      expect(json[0]).to have_key("account_name")
     end
 
     it "should don't include fake students" do

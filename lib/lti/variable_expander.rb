@@ -137,6 +137,61 @@ module Lti
       end
     end
 
+    # If the current user is an observer in the launch
+    # context, this substitution returns a comma-separated
+    # list of user IDs linked to the current user for
+    # observing. For LTI 1.3 tools, the user IDs will
+    # correspond to the "sub" claim made in LTI 1.3 launches
+    # (a UUIDv4), while for all other tools, the user IDs will
+    # be the user's typical LTI ID.
+    #
+    # Returns an empty string otherwise.
+    #
+    # @launch_parameter com_instructure_user_observees
+    # @example
+    #   ```
+    #    LTI 1.3: "a6e2e413-4afb-4b60-90d1-8b0344df3e91",
+    #    All Others: "c0ddd6c90cbe1ef0f32fbce5c3bf654204be186c"
+    #   ```
+    register_expansion 'com.instructure.User.observees', [],
+                      -> do
+                        observed_users = ObserverEnrollment.observed_students(@context, @current_user).
+                          keys
+                          if @tool.use_1_3?
+                            observed_users.map{ |u| u.lookup_lti_id(@context) }.join(',')
+                          else
+                            observed_users.map{ |u| Lti::Asset.opaque_identifier_for(u) }.join(',')
+                          end
+                      end,
+                      COURSE_GUARD,
+                      default_name: 'com_instructure_user_observees'
+
+    # Returns an array of the section names that the user is enrolled in, if the
+    # context of the tool launch is within a course.
+    #
+    # @example
+    #   ```
+    #   [ "Section 1", "Section 5", "TA Section"]
+    #   ```
+    register_expansion 'com.instructure.User.sectionNames', [],
+                       -> { Enrollment.active.joins(:course_section).where(user_id: @current_user.id, course_id: @context.id).pluck(:name) },
+                       ENROLLMENT_GUARD,
+                       default_name: 'com_instructure_user_section_names'
+
+    # returns all observee ids linked to this observer as an String separated by `,`
+    # @launch_parameter com_instructure_observee_ids
+    # @example
+    #   ```
+    #   "A123,B456,..."
+    #   ```
+    register_expansion 'com.instructure.Observee.sisIds', [],
+                        -> do
+                          observed_users = ObserverEnrollment.observed_students(@context, @current_user).keys
+                          observed_users&.collect { |user| find_sis_user_id_for(user) }&.compact&.join(',')
+                        end,
+                        COURSE_GUARD,
+                        default_name: 'com_instructure_observee_sis_ids'
+
     # The title of the context
     # @launch_parameter context_title
     # @example
@@ -1194,6 +1249,16 @@ module Lti
                        -> { @assignment.workflow_state == 'published' },
                        ASSIGNMENT_GUARD
 
+    # Returns true if the assignment is LDB enabled.
+    # Only available when launched as an assignment.
+    # @example
+    #   ```
+    #   true
+    #   ```
+    register_expansion 'Canvas.assignment.lockdownEnabled', [],
+                       -> { @assignment.settings&.dig('lockdown_browser', 'require_lockdown_browser') || false },
+                       ASSIGNMENT_GUARD
+
     # Returns the endpoint url for accessing link-level tool settings
     # Only available for LTI 2.0
     # @example
@@ -1387,6 +1452,11 @@ module Lti
     def sis_pseudonym
       context = @enrollment || @context
       @sis_pseudonym ||= SisPseudonym.for(@current_user, context, type: :trusted, require_sis: false, root_account: @root_account) if @current_user
+    end
+
+    def find_sis_user_id_for(user)
+      context = @enrollment || @context
+      SisPseudonym.for(user, context, type: :trusted, require_sis: false, root_account: @root_account)&.sis_user_id
     end
 
     def expand_substring_variables(value)

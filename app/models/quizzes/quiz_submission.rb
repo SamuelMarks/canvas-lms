@@ -19,6 +19,7 @@
 require 'sanitize'
 
 class Quizzes::QuizSubmission < ActiveRecord::Base
+  extend RootAccountResolver
   self.table_name = 'quiz_submissions'
 
   include Workflow
@@ -53,6 +54,8 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
 
   has_many :attachments, :as => :context, :inverse_of => :context, :dependent => :destroy
   has_many :events, class_name: 'Quizzes::QuizSubmissionEvent'
+
+  resolves_root_account through: :quiz
 
   # update the QuizSubmission's Submission to 'graded' when the QuizSubmission is marked as 'complete.' this
   # ensures that quiz submissions with essay questions don't show as graded in the SpeedGrader until the instructor
@@ -767,6 +770,10 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
   # Excludes teacher preview and Student View submissions.
   scope :for_students, ->(quiz) { not_preview.for_user_ids(quiz.context.all_real_student_ids) }
 
+  def course_broadcast_data
+    quiz.context&.broadcast_data
+  end
+
   has_a_broadcast_policy
 
   set_broadcast_policy do |p|
@@ -779,6 +786,7 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
       BroadcastPolicies::QuizSubmissionPolicy.new(q_sub).
         should_dispatch_submission_graded?
     }
+    p.data { course_broadcast_data }
 
     p.dispatch :submission_grade_changed
     p.to { ([user] + User.observing_students_in_course(user, self.context)).uniq(&:id) }
@@ -786,6 +794,7 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
       BroadcastPolicies::QuizSubmissionPolicy.new(q_sub).
         should_dispatch_submission_grade_changed?
     }
+    p.data { course_broadcast_data }
 
     p.dispatch :submission_needs_grading
     p.to { teachers }
@@ -793,6 +802,7 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
       BroadcastPolicies::QuizSubmissionPolicy.new(q_sub).
         should_dispatch_submission_needs_grading?
     }
+    p.data { course_broadcast_data }
   end
 
   def teachers
@@ -891,5 +901,9 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
     # Ungraded surveys and practice quizzes will not have associated Assignment
     # or Submission objects, and so results should always be shown to the student.
     quiz.ungraded? || !!submission&.posted?
+  end
+
+  def end_at_without_time_limit
+    quiz.build_submission_end_at(self, false)
   end
 end

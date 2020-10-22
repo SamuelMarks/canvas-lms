@@ -67,13 +67,22 @@ export default class MessageFormDialog extends DialogBaseView {
   }
 
   dialogOptions() {
+    const responsive_awareness = !!window.ENV?.FEATURES?.responsive_awareness
+
+    const smallTablet = window.matchMedia('(min-width: 550px)').matches
+    const tablet = window.matchMedia('(min-width: 700px)').matches
+
+    const responsiveMinWidth = smallTablet ? 550 : 320
+    const responsiveWidth = tablet ? 700 : smallTablet ? 550 : 320
+    const responsiveHeight = smallTablet ? 550 : 'auto'
+
     return {
       id: 'compose-new-message',
       autoOpen: false,
-      minWidth: 550,
-      width: 700,
+      minWidth: responsive_awareness ? responsiveMinWidth : 550,
+      width: responsive_awareness ? responsiveWidth : 700,
       minHeight: 500,
-      height: 550,
+      height: responsive_awareness ? responsiveHeight : 550,
       resizable: true,
       title: I18n.t('Compose Message'),
       // Event handler for catching when the dialog is closed.
@@ -217,7 +226,8 @@ export default class MessageFormDialog extends DialogBaseView {
       el: this.$messageCourse,
       courses: this.options.courses,
       defaultOption: I18n.t('select_course', 'Select course'),
-      messageableOnly: true
+      messageableOnly: true,
+      excludeConcluded: true
     })
     if (this.model) {
       if (this.model.get('context_code')) {
@@ -509,6 +519,7 @@ export default class MessageFormDialog extends DialogBaseView {
       $attachment.hide()
       return
     }
+    this.focusAddAttachment()
     $attachment.slideDown('fast')
     const $icon = $attachment.find('.attachment-icon i')
     $icon.empty()
@@ -516,6 +527,15 @@ export default class MessageFormDialog extends DialogBaseView {
     const {name} = file
     $attachment.find('.attachment-name').text(name)
     this.setAttachmentClip($attachment)
+
+    // have the alert happen later so the focus change doesn't interrupt it
+    const attachedFiles = this.$attachmentsPane.find('input:not([value=])')
+    setTimeout(() => {
+      $.screenReaderFlashMessageExclusive(
+        I18n.t('File %{count} attached: %{name}', {count: attachedFiles.length, name})
+      )
+    }, 1000)
+
     const remove = $attachment.find('.remove_link')
     remove.attr('aria-label', `${remove.attr('title')}: ${name}`)
     const extension = name

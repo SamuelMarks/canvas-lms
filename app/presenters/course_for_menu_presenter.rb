@@ -28,8 +28,18 @@ class CourseForMenuPresenter
   end
   attr_reader :course
 
+
+  def default_url_options
+    { protocol: HostUrl.protocol, host: HostUrl.context_host(@course.root_account) }
+  end
+
   def to_h
     position = @user.dashboard_positions[course.asset_string]
+
+    observee = if course.primary_enrollment_type == 'ObserverEnrollment'
+      ObserverEnrollment.observed_students(course, @user)&.keys&.map(&:name).join(', ')
+    end
+
     {
       longName: "#{course.name} - #{course.short_name}",
       shortName: course.nickname_for(@user),
@@ -40,8 +50,9 @@ class CourseForMenuPresenter
       term: term || nil,
       subtitle: subtitle,
       enrollmentType: course.primary_enrollment_type,
+      observee: observee,
       id: course.id,
-      isFavorited: course.favorite_for_user?(@user) && @user.account.feature_enabled?(:unfavorite_course_from_dashboard),
+      isFavorited: course.favorite_for_user?(@user),
       image: course.feature_enabled?(:course_card_images) ? course.image : nil,
       position: position.present? ? position.to_i : nil
     }.tap do |hash|
@@ -61,14 +72,17 @@ class CourseForMenuPresenter
           presenter.to_h
         end
       end
+      if @context.root_account.feature_enabled?(:unpublished_courses)
+        hash[:published] = course.published?
+        hash[:canChangeCourseState] = course.grants_right?(@user, :change_course_state)
+        hash[:defaultView] = course.default_view
+        hash[:pagesUrl] = polymorphic_url([course, :wiki_pages])
+        hash[:frontPageTitle] = course&.wiki&.front_page&.title
+      end
     end
   end
 
   private
-  def role
-    Role.get_role_by_id(Shard.relative_id_for(course.primary_enrollment_role_id, course.shard, Shard.current)) ||
-      Enrollment.get_built_in_role_for_type(course.primary_enrollment_type)
-  end
 
   def subtitle
     label = if course.primary_enrollment_state == 'invited'
@@ -76,7 +90,7 @@ class CourseForMenuPresenter
     else
       before_label('#shared.menu_enrollment.labels.enrolled_as', 'enrolled as')
     end
-    [ label, role.try(:label) ].join(' ')
+    [ label, course.primary_enrollment_role.try(:label) ].join(' ')
   end
 
   def term

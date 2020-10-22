@@ -17,8 +17,9 @@
  */
 import I18n from 'i18n!permissions_role_tray'
 import {connect} from 'react-redux'
-import PropTypes from 'prop-types'
+import {arrayOf, bool, func, string} from 'prop-types'
 import React from 'react'
+import {flatten} from 'lodash'
 
 import {Button} from '@instructure/ui-buttons'
 import {View} from '@instructure/ui-layout'
@@ -41,8 +42,8 @@ import {
 function renderPermissionDetailToggles(tab, permissionName) {
   return PERMISSION_DETAIL_SECTIONS.map(PDS => (
     <DetailsToggle
-      key={PDS.title}
-      title={PDS.title}
+      key={PDS.key}
+      title={PDS.title()}
       detailItems={
         tab === COURSE
           ? PERMISSION_DETAILS_COURSE_TEMPLATES[PDS.key][permissionName] || []
@@ -115,16 +116,33 @@ export default function PermissionTray(props) {
 }
 
 PermissionTray.propTypes = {
-  assignedRoles: PropTypes.arrayOf(permissionPropTypes.role).isRequired,
-  hideTray: PropTypes.func.isRequired,
-  label: PropTypes.string.isRequired,
-  open: PropTypes.bool.isRequired,
-  unassignedRoles: PropTypes.arrayOf(permissionPropTypes.role).isRequired,
-  permissionName: PropTypes.string.isRequired,
-  tab: PropTypes.string.isRequired
+  assignedRoles: arrayOf(permissionPropTypes.role).isRequired,
+  hideTray: func.isRequired,
+  label: string.isRequired,
+  open: bool.isRequired,
+  unassignedRoles: arrayOf(permissionPropTypes.role).isRequired,
+  permissionName: string.isRequired,
+  tab: string.isRequired
 }
 
 function mapStateToProps(state, ownProps) {
+  function findPermission(name) {
+    // First try the primary permissions (might be a group)
+    const perm = state.permissions.find(
+      p => p.permission_name === name && p.contextType === ownProps.tab
+    )
+    if (perm) return perm
+
+    // If that didn't work, try granular permissions buried inside groups
+    const groupPerms = flatten(
+      state.permissions
+        .filter(p => p.contextType === ownProps.tab)
+        .map(p => p.granular_permissions)
+        .filter(p => typeof p !== 'undefined')
+    )
+    return groupPerms.find(p => p.permission_name === name)
+  }
+
   if (state.activePermissionTray === null) {
     const stateProps = {
       assignedRoles: [],
@@ -136,9 +154,7 @@ function mapStateToProps(state, ownProps) {
     return {...stateProps, ...ownProps}
   }
 
-  const permission = state.permissions.find(
-    p => p.permission_name === state.activePermissionTray.permissionName
-  )
+  const permission = findPermission(state.activePermissionTray.permissionName)
   const permissionName = permission.permission_name
   const displayedRoles = state.roles.filter(r => r.displayed)
 
@@ -157,7 +173,4 @@ const mapDispatchToProps = {
   hideTray: actions.hideAllTrays
 }
 
-export const ConnectedPermissionTray = connect(
-  mapStateToProps,
-  mapDispatchToProps
-)(PermissionTray)
+export const ConnectedPermissionTray = connect(mapStateToProps, mapDispatchToProps)(PermissionTray)

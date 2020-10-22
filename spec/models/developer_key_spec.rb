@@ -41,9 +41,29 @@ describe DeveloperKey do
     )
   end
 
+  describe '#find_cached' do
+    it "raises error when not found, and caches that" do
+      enable_cache do
+        expect(DeveloperKey).to receive(:find_by).once.and_call_original
+        expect { DeveloperKey.find_cached(0) }.to raise_error(ActiveRecord::RecordNotFound)
+        # only calls the original once
+        expect { DeveloperKey.find_cached(0) }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+    end
+  end
+
+  describe 'site_admin' do
+    subject { DeveloperKey.site_admin }
+
+    let!(:site_admin_key) { DeveloperKey.create! }
+    let!(:root_account_key) { DeveloperKey.create!(account: Account.default) }
+
+    it { is_expected.to match_array [site_admin_key] }
+  end
+
   describe 'default values for is_lti_key' do
     let(:public_jwk) do
-      key_hash = Lti::RSAKeyPair.new.public_jwk.to_h
+      key_hash = Canvas::Security::RSAKeyPair.new.public_jwk.to_h
       key_hash['kty'] = key_hash['kty'].to_s
       key_hash
     end
@@ -638,6 +658,47 @@ describe DeveloperKey do
         end
       end
     end
+
+    describe 'after_save' do
+      describe 'set_root_account' do
+        context 'when account is not root account' do
+          let(:account) {
+            a = account_model
+            a.root_account = Account.create!
+            a.save!
+            a
+          }
+
+          it 'sets root account equal to account\'s root account' do
+            expect(developer_key_not_saved.root_account).to be_nil
+            developer_key_not_saved.account = account
+            developer_key_not_saved.save!
+            expect(developer_key_not_saved.root_account).to eq account.root_account
+          end
+        end
+
+        context 'when accout is site admin' do
+          subject { developer_key_not_saved.root_account }
+
+          let(:account) { nil }
+
+          before { developer_key_not_saved.update!(account: account) }
+
+          it { is_expected.to eq Account.site_admin }
+        end
+
+        context 'when account is root account' do
+          let(:account) { account_model }
+
+          it 'set root account equal to account' do
+            expect(developer_key_not_saved.root_account).to be_nil
+            developer_key_not_saved.account = account
+            developer_key_not_saved.save!
+            expect(developer_key_not_saved.root_account).to eq account
+          end
+        end
+      end
+    end
   end
 
   describe 'associations' do
@@ -757,6 +818,19 @@ describe DeveloperKey do
         end
       end
       let(:sa_account_binding) { sa_developer_key.developer_key_account_bindings.find_by(account: Account.site_admin) }
+
+      context 'when the developer key and account are on different, non site-admin shards' do
+        it "doesn't return a binding for an account with the same local ID on a different shard" do
+          expect(root_account.shard.id).to_not eq(@shard2.id)
+          @shard2.activate do
+            account = Account.find_by(id: root_account.local_id)
+            account ||= Account.create!(id: root_account.local_id)
+            shard2_developer_key = DeveloperKey.create!(name: 'Shard 2 Key', account_id: account.id)
+            expect(shard2_developer_key.account_binding_for(account)).to_not be_nil
+            expect(shard2_developer_key.account_binding_for(root_account)).to be_nil
+          end
+        end
+      end
 
       context 'when developer key binding is on the site admin shard' do
         it 'finds the site admin binding if it is set to "on"' do
@@ -884,11 +958,11 @@ describe DeveloperKey do
       before { subject.generate_rsa_keypair! }
 
       it 'populates the "public_jwk" column with a public key' do
-        expect(subject.public_jwk['kty']).to eq Lti::RSAKeyPair::KTY
+        expect(subject.public_jwk['kty']).to eq Canvas::Security::RSAKeyPair::KTY
       end
 
       it 'populates the "private_jwk" attribute with a private key' do
-        expect(subject.private_jwk['kty']).to eq Lti::RSAKeyPair::KTY.to_sym
+        expect(subject.private_jwk['kty']).to eq Canvas::Security::RSAKeyPair::KTY.to_sym
       end
     end
   end
@@ -998,5 +1072,41 @@ describe DeveloperKey do
   it "doesn't allow the default key to be deleted" do
     expect { DeveloperKey.default.destroy }.to raise_error "Please never delete the default developer key"
     expect { DeveloperKey.default.deactivate }.to raise_error "Please never delete the default developer key"
+  end
+
+  describe "issue_token" do
+    subject { DeveloperKey.create! }
+    let(:claims) { { "key" => "value" } }
+    let(:asymmetric_keypair) { Canvas::Security::RSAKeyPair.new.to_jwk }
+    let(:asymmetric_public_key) { asymmetric_keypair.to_key.public_key.to_jwk }
+
+    before {
+      # set up assymetric key
+      allow(Canvas::Oauth::KeyStorage).to receive(:present_key).and_return(asymmetric_keypair)
+    }
+
+
+    it "defaults to internal symmetric encryption with no audience set" do
+      expect(subject.client_credentials_audience).to be_nil
+      token = subject.issue_token(claims)
+      decoded = Canvas::Security.decode_jwt(token)
+      expect(decoded).to eq claims
+    end
+
+    it "uses to symmetric encryption with audience set to internal" do
+      subject.client_credentials_audience = "internal"
+      subject.save!
+      token = subject.issue_token(claims)
+      decoded = Canvas::Security.decode_jwt(token)
+      expect(decoded).to eq claims
+    end
+
+    it "uses to asymmetric encryption with audience set to external" do
+      subject.client_credentials_audience = "external"
+      subject.save!
+      token = subject.issue_token(claims)
+      decoded = JSON::JWT.decode(token, asymmetric_public_key)
+      expect(decoded).to eq claims
+    end
   end
 end

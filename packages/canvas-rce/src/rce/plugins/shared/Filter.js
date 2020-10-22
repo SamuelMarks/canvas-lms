@@ -36,8 +36,8 @@ const DEFAULT_FILTER_SETTINGS = {
   sortValue: 'date_added'
 }
 
-export function useFilterSettings() {
-  const [filterSettings, setFilterSettings] = useState(DEFAULT_FILTER_SETTINGS)
+export function useFilterSettings(default_settings) {
+  const [filterSettings, setFilterSettings] = useState(default_settings || DEFAULT_FILTER_SETTINGS)
 
   function updateFilterSettings(nextSettings) {
     setFilterSettings({...filterSettings, ...nextSettings})
@@ -54,35 +54,66 @@ function fileLabelFromContext(contextType) {
       return formatMessage('Course Files')
     case 'group':
       return formatMessage('Group Files')
+    case 'files':
     default:
       return formatMessage('Files')
   }
 }
 
-// ui-forms/Select chokes if one of the options is
-// undefined, which happens if you conditionally
-// create one like {test && <option>...</option>}
-// so build the options list more carefully here
-function buildContentOptions(userContextType) {
-  const contentOptions = [
+function renderTypeOptions(contentType, contentSubtype, userContextType) {
+  const options = [
     <option key="links" value="links" icon={IconLinkLine}>
       {formatMessage('Links')}
-    </option>,
-    <option key="user_files" value="user_files" icon={IconFolderLine}>
-      {fileLabelFromContext('user')}
     </option>
   ]
-
-  if (userContextType === 'course') {
-    contentOptions.splice(
-      1,
-      0,
+  if (userContextType === 'course' && contentType !== 'links' && contentSubtype !== 'all') {
+    options.push(
       <option key="course_files" value="course_files" icon={IconFolderLine}>
         {fileLabelFromContext('course')}
       </option>
     )
   }
-  return contentOptions
+  if (userContextType === 'group' && contentType !== 'links' && contentSubtype !== 'all') {
+    options.push(
+      <option key="group_files" value="group_files" icon={IconFolderLine}>
+        {fileLabelFromContext('group')}
+      </option>
+    )
+  }
+  options.push(
+    <option key="user_files" value="user_files" icon={IconFolderLine}>
+      {fileLabelFromContext(contentType === 'links' || contentSubtype === 'all' ? 'files' : 'user')}
+    </option>
+  )
+  return options
+}
+
+function renderType(contentType, contentSubtype, onChange, userContextType) {
+  if (userContextType === 'course' || userContextType === 'group') {
+    return (
+      <Select
+        label={<ScreenReaderContent>{formatMessage('Content Type')}</ScreenReaderContent>}
+        onChange={(e, selection) => {
+          const changed = {contentType: selection.value}
+          if (contentType === 'links') {
+            // when changing away from links, go to all user files
+            changed.contentSubtype = 'all'
+          }
+          onChange(changed)
+        }}
+        selectedOption={contentType}
+      >
+        {renderTypeOptions(contentType, contentSubtype, userContextType)}
+      </Select>
+    )
+  } else {
+    return (
+      <View as="div" borderWidth="small" padding="x-small small" borderRadius="medium" width="100%">
+        <ScreenReaderContent>{formatMessage('Content Type')}</ScreenReaderContent>
+        {fileLabelFromContext('user', contentSubtype)}
+      </View>
+    )
+  }
 }
 
 export default function Filter(props) {
@@ -95,23 +126,20 @@ export default function Filter(props) {
 
   return (
     <View display="block" direction="column">
-      <Select
-        label={<ScreenReaderContent>{formatMessage('Content Type')}</ScreenReaderContent>}
-        onChange={(e, selection) => {
-          onChange({contentType: selection.value})
-        }}
-        selectedOption={contentType}
-      >
-        {buildContentOptions(userContextType)}
-      </Select>
-
+      {renderType(contentType, contentSubtype, onChange, userContextType)}
       {contentType !== 'links' && (
         <Flex margin="small none none none">
           <Flex.Item grow shrink margin="none xx-small none none">
             <Select
               label={<ScreenReaderContent>{formatMessage('Content Subtype')}</ScreenReaderContent>}
               onChange={(e, selection) => {
-                onChange({contentSubtype: selection.value})
+                const changed = {contentSubtype: selection.value}
+                if (changed.contentSubtype === 'all') {
+                  // when flipped to All, the context needs to be user
+                  // so we can get media_objects, which are all returned in the user context
+                  changed.contentType = 'user_files'
+                }
+                onChange(changed)
               }}
               selectedOption={contentSubtype}
             >
@@ -161,7 +189,7 @@ Filter.propTypes = {
   /**
    * `contentType` is the primary filter setting (e.g. links, files)
    */
-  contentType: oneOf(['links', 'user_files', 'course_files']).isRequired,
+  contentType: oneOf(['links', 'user_files', 'course_files', 'group_files']).isRequired,
 
   /**
    * `onChange` is called when any of the Filter settings are changed
@@ -176,5 +204,5 @@ Filter.propTypes = {
   /**
    * The user's context
    */
-  userContextType: oneOf(['user', 'course'])
+  userContextType: oneOf(['user', 'course', 'group'])
 }

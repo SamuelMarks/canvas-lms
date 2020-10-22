@@ -196,11 +196,13 @@ export default class ItemView extends Backbone.View {
 
   renderCopyToTray(open) {
     const quizId = this.model.get('id')
+    const isOldQuiz = this.model.get('quiz_type') !== 'quizzes.next'
+    const contentSelection = isOldQuiz ? {quizzes: [quizId]} : {assignments: [quizId]}
     ReactDOM.render(
       <DirectShareCourseTray
         open={open}
         sourceCourseId={ENV.COURSE_ID}
-        contentSelection={{quizzes: [quizId]}}
+        contentSelection={contentSelection}
         onDismiss={() => {
           this.renderCopyToTray(false)
           return setTimeout(() => this.$settingsButton.focus(), 100)
@@ -217,11 +219,13 @@ export default class ItemView extends Backbone.View {
 
   renderSendToTray(open) {
     const quizId = this.model.get('id')
+    const isOldQuiz = this.model.get('quiz_type') !== 'quizzes.next'
+    const contentType = isOldQuiz ? 'quiz' : 'assignment'
     ReactDOM.render(
       <DirectShareUserModal
         open={open}
         sourceCourseId={ENV.COURSE_ID}
-        contentShare={{content_type: 'quiz', content_id: quizId}}
+        contentShare={{content_type: contentType, content_id: quizId}}
         onDismiss={() => {
           this.renderSendToTray(false)
           return setTimeout(() => this.$settingsButton.focus(), 100)
@@ -251,7 +255,8 @@ export default class ItemView extends Backbone.View {
   }
 
   isStudent() {
-    return ENV.current_user_roles.includes('student')
+    // must check canManage because current_user_roles will include roles from other enrolled courses
+    return ENV.current_user_roles?.includes('student') && !this.canManage()
   }
 
   canDuplicate() {
@@ -343,6 +348,8 @@ export default class ItemView extends Backbone.View {
     base.showDueDate = this.model.multipleDueDates() || this.model.singleSectionDueDate()
     base.name = this.model.name()
     base.isQuizzesNext = this.model.isQuizzesNext()
+    base.useQuizzesNextIcon = this.model.isQuizzesNext() || this.isStudent()
+    base.isQuizzesNextAndNotStudent = this.model.isQuizzesNext() && !this.isStudent()
     base.quizzesRespondusEnabled =
       this.isStudent() &&
       this.model.get('require_lockdown_browser') &&
@@ -353,6 +360,7 @@ export default class ItemView extends Backbone.View {
       this.model.get('restricted_by_master_course')
 
     base.DIRECT_SHARE_ENABLED = ENV.FLAGS && ENV.FLAGS.DIRECT_SHARE_ENABLED
+    base.canOpenManageOptions = this.canManage() || base.DIRECT_SHARE_ENABLED
 
     return base
   }

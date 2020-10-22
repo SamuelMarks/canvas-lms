@@ -135,7 +135,7 @@ test('passes the textarea height into tinyOptions', () => {
   const taHeight = '123'
   const textarea = {offsetHeight: taHeight}
   const opts = {defaultContent: 'default text'}
-  const props = RCELoader.createRCEProps(textarea, opts)
+  RCELoader.createRCEProps(textarea, opts)
   equal(opts.tinyOptions.height, taHeight)
 })
 
@@ -158,17 +158,24 @@ test('renders with rce', function() {
   ok(this.rce.renderIntoDiv.calledWith(this.$div.get(0)))
 })
 
-test('yields editor to callback', function() {
-  const cb = sinon.spy()
+test('yields editor to callback,', function(assert) {
+  const done = assert.async()
+  const cb = (textarea, rce) => {
+    equal(textarea, this.$textarea.get(0))
+    equal(rce, this.editor)
+    done()
+  }
   RCELoader.loadOnTarget(this.$div, {}, cb)
-  ok(cb.calledWith(this.$textarea.get(0), this.editor))
 })
 
-test('ensures yielded editor has call and focus methods', function() {
-  const cb = sinon.spy()
+test('ensures yielded editor has call and focus methods', function(assert) {
+  const done = assert.async()
+  const cb = (textarea, rce) => {
+    equal(typeof rce.call, 'function')
+    equal(typeof rce.focus, 'function')
+    done()
+  }
   RCELoader.loadOnTarget(this.$div, {}, cb)
-  equal(typeof this.editor.call, 'function')
-  equal(typeof this.editor.focus, 'function')
 })
 
 QUnit.module('loadSidebarOnTarget', {
@@ -177,6 +184,7 @@ QUnit.module('loadSidebarOnTarget', {
     ENV.RICH_CONTENT_APP_HOST = 'http://rce.host'
     ENV.RICH_CONTENT_CAN_UPLOAD_FILES = true
     ENV.context_asset_string = 'courses_1'
+    ENV.current_user_id = '17'
     fixtures.setup()
     this.$div = fixtures.create('<div />')
     this.sidebar = {}
@@ -202,6 +210,16 @@ test('passes host and context from ENV as props to sidebar', function() {
   equal(props.contextId, '1')
 })
 
+test('uses user context when in account context', function() {
+  ENV.context_asset_string = 'account_1'
+  const cb = sinon.spy()
+  RCELoader.loadSidebarOnTarget(this.$div, cb)
+  ok(this.rce.renderSidebarIntoDiv.called)
+  const props = this.rce.renderSidebarIntoDiv.args[0][1]
+  equal(props.contextType, 'user')
+  equal(props.contextId, '17')
+})
+
 test('yields sidebar to callback', function() {
   const cb = sinon.spy()
   RCELoader.loadSidebarOnTarget(this.$div, cb)
@@ -209,7 +227,7 @@ test('yields sidebar to callback', function() {
 })
 
 test('ensures yielded sidebar has show and hide methods', function() {
-  const cb = sinon.spy()
+  const cb = () => {}
   RCELoader.loadSidebarOnTarget(this.$div, cb)
   equal(typeof this.sidebar.show, 'function')
   equal(typeof this.sidebar.hide, 'function')

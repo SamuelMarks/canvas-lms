@@ -20,14 +20,13 @@ require 'atom'
 
 class Wiki < ActiveRecord::Base
   has_many :wiki_pages, :dependent => :destroy
+  has_one :course
+  has_one :group
+  belongs_to :root_account, :class_name => 'Account'
 
   before_save :set_has_no_front_page_default
   after_update :set_downstream_change_for_master_courses
-
   after_save :update_contexts
-
-  has_one :course
-  has_one :group
 
   DEFAULT_FRONT_PAGE_URL = 'front-page'
 
@@ -154,46 +153,29 @@ class Wiki < ActiveRecord::Base
     can :read and can :create_page and can :update_page
 
     given do |user, session|
-      self.context.root_account.feature_enabled?(:granular_permissions_wiki_pages) &&
       self.context.grants_right?(user, session, :manage_wiki_create)
     end
     can :read and can :create_page and can :view_unpublished_items
 
     given do |user, session|
-      self.context.root_account.feature_enabled?(:granular_permissions_wiki_pages) &&
       self.context.grants_right?(user, session, :manage_wiki_delete)
     end
     can :read and can :delete_page and can :view_unpublished_items
 
     given do |user, session|
-      self.context.root_account.feature_enabled?(:granular_permissions_wiki_pages) &&
       self.context.grants_right?(user, session, :manage_wiki_update)
     end
     can :read and can :update and can :update_page and can :view_unpublished_items
 
     # Pages created by a user without this permission will be automatically published
     given do |user, session|
-      self.context.root_account.feature_enabled?(:granular_permissions_wiki_pages) &&
       self.context.grants_right?(user, session, :manage_wiki_update) && !self.context.is_a?(Group)
-    end
-    can :publish_page
-
-    given do |user, session|
-      !self.context.root_account.feature_enabled?(:granular_permissions_wiki_pages) &&
-      self.context.grants_right?(user, session, :manage_wiki)
-    end
-    can :manage and can :read and can :update and can :create_page and can :delete_page and can :update_page and can :view_unpublished_items
-
-    # Pages created by a user without this permission will be automatically published
-    given do |user, session|
-      !self.context.root_account.feature_enabled?(:granular_permissions_wiki_pages) &&
-      self.context.grants_right?(user, session, :manage_wiki) && !self.context.is_a?(Group)
     end
     can :publish_page
   end
 
   def self.wiki_for_context(context)
-    Shackles.activate(:master) do
+    GuardRail.activate(:primary) do
       context.transaction do
         # otherwise we lose dirty changes
         context.save! if context.changed?
@@ -206,7 +188,7 @@ class Wiki < ActiveRecord::Base
         self.extend TextHelper
         name = CanvasTextHelper.truncate_text(context.name, {:max_length => 200, :ellipsis => ''})
 
-        context.wiki = wiki = Wiki.create!(:title => "#{name} Wiki")
+        context.wiki = wiki = Wiki.create!(:title => "#{name} Wiki", :root_account_id => context.root_account_id)
         context.save!
         wiki
       end
@@ -243,4 +225,5 @@ class Wiki < ActiveRecord::Base
     # was a shim for draft state, can be removed
     'pages'
   end
+
 end

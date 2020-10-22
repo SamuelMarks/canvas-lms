@@ -5,6 +5,9 @@
     "add_8523c19b": {
         "message": "追加"
     },
+    "add_another_f4e50d57": {
+        "message": "もう 1 つ追加"
+    },
     "add_cc_subtitles_55f0394e": {
         "message": "CC /字幕を追加"
     },
@@ -29,8 +32,8 @@
     "align_right_9bad3ac1": {
         "message": "右揃え"
     },
-    "alignment_and_indentation_f7de34bf": {
-        "message": "調節と書き出し"
+    "alignment_and_lists_5cebcb69": {
+        "message": "配置とリスト"
     },
     "all_4321c3a1": {
         "message": "すべて"
@@ -47,11 +50,17 @@
     "alt_text_611fb322": {
         "message": "Alt テキスト"
     },
+    "an_error_occured_reading_the_file_ff48558b": {
+        "message": "ファイルを読み取る際にエラーが発生しました"
+    },
     "an_error_occurred_attempting_to_dismiss_the_opport_f86e0667": {
         "message": "案件を却下しようとした際にエラーが発生しました。"
     },
-    "an_error_occurred_generating_the_file_preview_cf259955": {
-        "message": "ファイルプレビューの作成中にエラーが発生しました"
+    "an_error_occurred_making_a_network_request_d1bda348": {
+        "message": "ネットワーク要求の作成中にエラーが発生しました"
+    },
+    "an_error_occurred_uploading_your_media_71f1444d": {
+        "message": "あなたのメディアをアップロードする際にエラーが発生しました。"
     },
     "announcement_fb4cb645": {
         "message": "発表"
@@ -107,17 +116,29 @@
     "assignmenttype_title_reminder_datetime_33fa66d5": {
         "message": "{ assignmentType } { title }、リマインダ{ datetime }."
     },
+    "attributes_963ba262": {
+        "message": "属性"
+    },
     "audio_and_video_recording_is_not_available_c7173efc": {
         "message": "オーディオとビデオの録音・録画は利用できません。"
     },
     "audio_player_for_title_20cc70d": {
         "message": "{ title }のオーディオプレーヤー"
     },
+    "auto_saved_content_exists_would_you_like_to_load_t_fee528f2": {
+        "message": "自動保存されたコンテンツが存在します。自動保存されたコンテンツを代わりにロードしますか？"
+    },
     "automatically_open_an_in_line_preview_preview_disp_ed784ffe": {
         "message": "インラインプレビューが自動的に開きます。(プレビューが表示されるのは保存後のみです)"
     },
+    "available_folders_694d0436": {
+        "message": "使用可能なフォルダ"
+    },
     "beginning_of_your_to_do_history_61ef2dce": {
         "message": "あなたのタスク履歴の始まり"
+    },
+    "c_2001_acme_inc_283f7f80": {
+        "message": "(c) 2001 Acme Inc."
     },
     "calendar_a8563bb2": {
         "message": "カレンダー:"
@@ -131,11 +152,11 @@
     "canvas_planner_98ed106": {
         "message": "Canvas プランナー"
     },
-    "canvas_plugins_705a5016": {
-        "message": "Canvas プラグイン"
-    },
     "choose_caption_file_9c45bc4e": {
         "message": "キャプションファイルを選択する"
+    },
+    "choose_usage_rights_33683854": {
+        "message": "使用権を選択..."
     },
     "circle_unordered_list_9e3a0763": {
         "message": "丸い番号無しリスト"
@@ -143,14 +164,20 @@
     "clear_selected_file_82388e50": {
         "message": "選択したファイルを消去する"
     },
-    "click_any_page_to_insert_a_link_to_that_page_ac920c02": {
-        "message": "ページをクリックして、そのページにリンクを挿入します。"
+    "clear_selected_file_filename_2fe8a58e": {
+        "message": "選択されたファイルを削除：{ filename }"
     },
     "click_to_embed_imagename_c41ea8df": {
         "message": "クリックして{ imageName }を埋め込みます"
     },
+    "click_to_hide_preview_3c707763": {
+        "message": "クリックしてプレビューを非表示にする"
+    },
     "click_to_insert_a_link_into_the_editor_c19613aa": {
         "message": "クリックすると、エディタにリンクが挿入されます。"
+    },
+    "click_to_show_preview_faa27051": {
+        "message": "クリックしてプレビューを表示する"
     },
     "close_a_menu_or_dialog_also_returns_you_to_the_edi_739079e6": {
         "message": "メニューまたはダイアログを閉じます。またエディタエリアに戻ります"
@@ -170,6 +197,9 @@
     "computer_1d7dfa6f": {
         "message": "コンピュータ"
     },
+    "content_1440204b": {
+        "message": "コンテンツ"
+    },
     "content_is_still_being_uploaded_if_you_continue_it_8f06d0cb": {
         "message": "コンテンツはまだアップロード中です。続行すると適切に埋め込まれません。"
     },
@@ -178,6 +208,9 @@
     },
     "content_type_2cf90d95": {
         "message": "コンテンツ タイプ"
+    },
+    "copyright_holder_66ee111": {
+        "message": "著作権保有者:"
     },
     "count_plural_0_0_words_one_1_word_other_words_acf32eca": {
         "message": "{ count, plural,\n     =0 {0 語}\n    one {1 語}\n  other {# 語}\n}"
@@ -200,6 +233,9 @@
     "course_files_62deb8f8": {
         "message": "コースファイル"
     },
+    "course_files_a31f97fc": {
+        "message": "コース ファイル"
+    },
     "course_images_f8511d04": {
         "message": "コース画像"
     },
@@ -214,6 +250,9 @@
     },
     "course_to_do_bcbbab54": {
         "message": "{ course } タスク"
+    },
+    "creative_commons_license_725584ae": {
+        "message": "クリエイティブ コモンズ ライセンス:"
     },
     "current_volume_level_c55ab825": {
         "message": "現在の音量のレベル"
@@ -238,6 +277,9 @@
     },
     "date_time_d9fbf2d7": {
         "message": "日付 & 時間:"
+    },
+    "decorative_image_3c28aa7d": {
+        "message": "装飾的なイメージ"
     },
     "decrease_indent_de6343ab": {
         "message": "インデントを戻す"
@@ -266,8 +308,8 @@
     "dimensions_45ddb7b7": {
         "message": "寸法"
     },
-    "directionality_ebcae6d0": {
-        "message": "方向"
+    "directionality_26ae9e08": {
+        "message": "方向性"
     },
     "disable_in_line_preview_2a675175": {
         "message": "インラインプレビューを無効にします。"
@@ -299,6 +341,9 @@
     "display_text_link_opens_in_a_new_tab_75e9afc9": {
         "message": "テキストリンクを表示する (新しいタブが開きます)"
     },
+    "document_678cd7bf": {
+        "message": "ドキュメント"
+    },
     "documents_81393201": {
         "message": "ドキュメント"
     },
@@ -317,9 +362,6 @@
     "drag_handle_use_up_and_down_arrows_to_resize_e29eae5c": {
         "message": "ハンドルをドラッグします。上下矢印を使用してサイズを変更する"
     },
-    "drop_and_drop_or_click_to_browse_your_computer_1acfa42d": {
-        "message": "ドラッグアンドドロップまたはクリックしてコンピュータを参照"
-    },
     "due_5d7267be": {
         "message": "期限："
     },
@@ -334,6 +376,9 @@
     },
     "edit_c5fbea07": {
         "message": "編集"
+    },
+    "edit_equation_f5279959": {
+        "message": "方程式を編集する"
     },
     "edit_link_7f53bebb": {
         "message": "リンクの編集"
@@ -362,8 +407,11 @@
     "embed_video_a97a64af": {
         "message": "ビデオを埋め込む"
     },
-    "embed_video_code_703e10f2": {
-        "message": "ビデオコードの埋め込み"
+    "embedded_content_aaeb4d3d": {
+        "message": "埋め込まれたコンテンツ"
+    },
+    "equation_1c5ac93c": {
+        "message": "方程式"
     },
     "error_loading_grades_e0b38f4d": {
         "message": "成績の読み込み中にエラー"
@@ -386,6 +434,9 @@
     "external_links_3d9f074e": {
         "message": "外部リンク"
     },
+    "external_tools_6e77821": {
+        "message": "外部ツール"
+    },
     "extra_large_b6cdf1ff": {
         "message": "特大"
     },
@@ -406,6 +457,12 @@
     },
     "file_name_8fd421ff": {
         "message": "ファイル名"
+    },
+    "file_upload_failed_af22dd91": {
+        "message": "ファイルのアップロードに失敗しました"
+    },
+    "file_uploading_56c9c0c8": {
+        "message": "ファイルをアップロード中"
     },
     "file_url_c12b64be": {
         "message": "ファイル URL"
@@ -428,14 +485,26 @@
     "finish_bc343002": {
         "message": "フィニッシュ"
     },
-    "focus_the_popup_context_toolbar_7979f4f8": {
-        "message": "ポップアップコンテキストツールバーに注目する"
+    "focus_element_options_toolbar_18d993e": {
+        "message": "フォーカス要素オプションツールバー"
+    },
+    "folder_tree_fbab0726": {
+        "message": "フォルダツリー"
+    },
+    "format_4247a9c5": {
+        "message": "形式"
     },
     "formatting_5b143aa8": {
         "message": "フォーマット"
     },
+    "found_auto_saved_content_3f6e4ca5": {
+        "message": "自動保存されたコンテンツが見つかりました"
+    },
     "found_count_plural_0_results_one_result_other_resu_46aeaa01": {
         "message": "{ count, plural,\n     =0 {# 結果}\n    one {# 1つの結果}\n  other {# 結果}\n}が見つかりました"
+    },
+    "fullscreen_873bf53f": {
+        "message": "全画面"
     },
     "generating_preview_45b53be0": {
         "message": "プレビュー中..."
@@ -461,8 +530,23 @@
     "grades_loaded_5056277c": {
         "message": "成績が読み込まれました"
     },
+    "group_documents_8bfd6ae6": {
+        "message": "グループドキュメント"
+    },
     "group_files_4324f3df": {
         "message": "グループファイル"
+    },
+    "group_files_82e5dcdb": {
+        "message": "グループ ファイル"
+    },
+    "group_images_98e0ac17": {
+        "message": "グループ画像"
+    },
+    "group_links_9493129e": {
+        "message": "グループリンク"
+    },
+    "group_media_2f3d128a": {
+        "message": "グループメディア"
     },
     "group_navigation_99f191a": {
         "message": "グループ ナビゲーション"
@@ -479,6 +563,18 @@
     "height_69b03e15": {
         "message": "高さ"
     },
+    "i_have_obtained_permission_to_use_this_file_6386f087": {
+        "message": "このファイルを使用する権限を取得しています。"
+    },
+    "i_hold_the_copyright_71ee91b1": {
+        "message": "著作権を保有しています"
+    },
+    "if_you_do_not_select_usage_rights_now_this_file_wi_14e07ab5": {
+        "message": "今すぐ使用権を選択しないと、このファイルはアップロード後に公開されません。"
+    },
+    "image_8ad06": {
+        "message": "画像"
+    },
     "image_options_5412d02c": {
         "message": "画像オプション"
     },
@@ -490,6 +586,9 @@
     },
     "increase_indent_6d550a4a": {
         "message": "インデント"
+    },
+    "insert_593145ef": {
+        "message": "挿入"
     },
     "insert_equella_links_49a8dacd": {
         "message": "Equella リンクを挿入してください"
@@ -506,6 +605,9 @@
     "invalid_file_type_881cc9b2": {
         "message": "無効なファイル タイプです"
     },
+    "invalid_url_cbde79f": {
+        "message": "無効な URL"
+    },
     "items_completed_items_plural_1_item_other_items_717d579f": {
         "message": "{ items } 完了した{ items, plural,\n     =1 {項目}\n  other {項目}\n}"
     },
@@ -518,7 +620,7 @@
     "late_2be42b88": {
         "message": "遅れている"
     },
-    "left_to_right_d6da6d7e": {
+    "left_to_right_e9b4fd06": {
         "message": "左から右"
     },
     "link_7262adec": {
@@ -526,12 +628,6 @@
     },
     "link_options_a16b758b": {
         "message": "リンクオプション"
-    },
-    "link_to_other_content_in_the_course_879163b5": {
-        "message": "コース内の他のコンテンツにリンクします。"
-    },
-    "link_to_other_content_in_the_group_3fe25379": {
-        "message": "グループ内の他のコンテンツにリンクします。"
     },
     "links_14b70841": {
         "message": "リンク"
@@ -575,6 +671,9 @@
     "loading_failed_e6a9d8ef": {
         "message": "読込みに失敗しました。"
     },
+    "loading_folders_d8b5869e": {
+        "message": "フォルダを読み込み中..."
+    },
     "loading_grades_c842c887": {
         "message": "成績読み込み中"
     },
@@ -590,6 +689,9 @@
     "location_3b6ff307": {
         "message": "場所:"
     },
+    "locked_762f138b": {
+        "message": "ロックされています"
+    },
     "looks_like_there_isn_t_anything_here_d9bcef49": {
         "message": "ここに何もないようです"
     },
@@ -602,8 +704,8 @@
     "mic_a7f3d311": {
         "message": "マイク"
     },
-    "miscellaneous_and_apps_f450a387": {
-        "message": "その他とアプリ"
+    "miscellaneous_e9818229": {
+        "message": "その他"
     },
     "missing_1a256b3b": {
         "message": "欠如"
@@ -616,6 +718,9 @@
     },
     "must_be_at_least_width_x_height_px_41dc825e": {
         "message": "少なくとも { width } x { height }px でなければなりません"
+    },
+    "my_files_2f621040": {
+        "message": "マイ ファイル"
     },
     "my_grades_98834476": {
         "message": "私の成績"
@@ -641,11 +746,14 @@
     "next_page_d2a39853": {
         "message": "次のページ"
     },
-    "no_alt_text_decorative_image_f318fc0e": {
-        "message": "別のテキストはありません (装飾画像)"
-    },
     "no_due_dates_assigned_e8f5bac8": {
         "message": "期日指定なし"
+    },
+    "no_e16d9132": {
+        "message": "いいえ"
+    },
+    "no_file_chosen_9a880793": {
+        "message": "ファイルが選択されていません"
     },
     "no_grade_3b4d7f3e": {
         "message": "成績なし"
@@ -710,6 +818,9 @@
     "other_editor_shortcuts_may_be_found_at_404aba4a": {
         "message": "他のエディタショートカットは下記をご覧ください"
     },
+    "p_is_not_a_valid_protocol_which_must_be_ftp_http_h_adf13fc2": {
+        "message": "{ p }は、ftp, http, https, mailto, skype, telであるか、省略可能である有効なプロトコルではありません。"
+    },
     "page_50c4823d": {
         "message": "ページ"
     },
@@ -749,6 +860,9 @@
     "preformatted_d0670862": {
         "message": "フォーマット済み"
     },
+    "preview_53003fd2": {
+        "message": "プレビュー"
+    },
     "preview_a3f8f854": {
         "message": "プレビュー"
     },
@@ -757,6 +871,9 @@
     },
     "previous_page_928fc112": {
         "message": "前のページ"
+    },
+    "protocol_must_be_ftp_http_https_mailto_skype_tel_o_73beb4f8": {
+        "message": "プロトコルは、ftp、http、https、mailto、skype、telであるか、省略可能です"
     },
     "pts_699bd9aa": {
         "message": "ポイント"
@@ -772,6 +889,12 @@
     },
     "quizzes_7e598f57": {
         "message": "クイズ"
+    },
+    "raw_html_editor_e3993e41": {
+        "message": "無変換の HTML エディタ"
+    },
+    "reading_a_media_track_file_failed_aborting_be051b20": {
+        "message": "メディアトラックファイルの読み取りに失敗しました。中止中。"
     },
     "record_7c9448b": {
         "message": "記録"
@@ -791,10 +914,13 @@
     "replies_4a8577c8": {
         "message": "返信"
     },
+    "restore_auto_save_deccd84b": {
+        "message": "自動保存したものを復元しますか？"
+    },
     "rich_content_editor_2708ef21": {
         "message": "リッチ コンテンツ エディタ"
     },
-    "right_to_left_ec223c81": {
+    "right_to_left_9cfb092a": {
         "message": "右から左"
     },
     "save_11a80ec3": {
@@ -842,6 +968,9 @@
     "size_b30e1077": {
         "message": "サイズ"
     },
+    "size_of_file_is_greater_than_the_maximum_max_mb_al_6eb3fa9a": {
+        "message": "{ file } のサイズが、最大許容ファイルサイズ { max } MB を超えています。"
+    },
     "small_b070434a": {
         "message": "小"
     },
@@ -853,6 +982,12 @@
     },
     "something_went_wrong_and_i_don_t_know_what_to_show_e0c54ec8": {
         "message": "何かがうまくいきませんでした。何を見せればいいのかわかりません。"
+    },
+    "something_went_wrong_check_your_connection_and_try_2a7b2d13": {
+        "message": "エラーが発生しました。接続を確認して、もう一度お試しください。"
+    },
+    "something_went_wrong_d238c551": {
+        "message": "なにかが失敗しました"
     },
     "something_went_wrong_try_again_after_refreshing_th_e094eb8d": {
         "message": "問題が発生しました。ページを最新に更新してからもう一度お試しください"
@@ -896,11 +1031,17 @@
     "subscript_59744f96": {
         "message": "下付き"
     },
+    "success_file_uploaded_8174e93f": {
+        "message": "成功：ファイルをアップロードしました"
+    },
     "success_to_do_created_e34ed395": {
         "message": "成功：タスクが作成"
     },
     "superscript_8cb349a2": {
         "message": "上付き"
+    },
+    "supported_file_types_srt_or_webvtt_7d827ed": {
+        "message": "サポートされるファイルタイプ：SRT または WebVTT"
     },
     "switch_to_raw_html_editor_4c9ac7de": {
         "message": "ロー html エディタに切り替える"
@@ -922,6 +1063,15 @@
     },
     "the_date_and_time_this_to_do_is_due_74c823d4": {
         "message": "これを行う日時が期限を過ぎています"
+    },
+    "the_material_is_in_the_public_domain_279c39a3": {
+        "message": "この資料はパブリック ドメインです"
+    },
+    "the_material_is_licensed_under_creative_commons_3242cb5e": {
+        "message": "この資料はクリエイティブ コモンズ ライセンスの対象となります"
+    },
+    "the_material_is_subject_to_an_exception_e_g_fair_u_a39c8ca2": {
+        "message": "素材には例外があります。例：公正使用、引用権、または適用される著作権法に基づくその他"
     },
     "there_are_no_points_associated_with_this_item_449c712a": {
         "message": "このアイテムに関連付けられているポイントはありません。"
@@ -965,6 +1115,9 @@
     "tomorrow_at_date_b53f2cf1": {
         "message": "明日 { date }にて"
     },
+    "tools_2fcf772e": {
+        "message": "ツール"
+    },
     "totalresults_results_found_numdisplayed_results_cu_a0a44975": {
         "message": "{ totalResults }結果が見つかりました。{ numDisplayed }結果が現在表示されています"
     },
@@ -992,9 +1145,6 @@
     "upload_document_253f0478": {
         "message": "ドキュメントをアップロードする"
     },
-    "upload_error_f9c00e27": {
-        "message": "アップロードエラー"
-    },
     "upload_file_fd2361b8": {
         "message": "ファイルアップロード"
     },
@@ -1003,6 +1153,9 @@
     },
     "upload_media_ce31135a": {
         "message": "メディアを読み込む"
+    },
+    "upload_not_available_for_this_folder_8f8623c6": {
+        "message": "このフォルダにはアップロードできません"
     },
     "upload_record_media_e4207d72": {
         "message": "メディアをアップロード/記録する"
@@ -1015,6 +1168,12 @@
     },
     "url_22a5f3b8": {
         "message": "URL"
+    },
+    "usage_right_ff96f3e2": {
+        "message": "使用権:"
+    },
+    "usage_rights_required_5fe4dd68": {
+        "message": "使用権:（必須）"
     },
     "use_arrow_keys_to_navigate_options_2021cc50": {
         "message": "矢印キーを使用してオプションを移動します。"
@@ -1055,6 +1214,9 @@
     "video_player_for_title_ffd9fbc4": {
         "message": "{ title }のビデオプレーヤー"
     },
+    "view_ba339f93": {
+        "message": "表示"
+    },
     "view_keyboard_shortcuts_34d1be0b": {
         "message": "キーボードのショートカットを見る"
     },
@@ -1073,6 +1235,9 @@
     "wiki_home_9cd54d0": {
         "message": "Wiki ホーム"
     },
+    "yes_dde87d5": {
+        "message": "はい"
+    },
     "yesterday_at_date_1aa6d18e": {
         "message": "昨日{ date }にて"
     },
@@ -1081,6 +1246,9 @@
     },
     "you_have_media_feedback_f5f9aba8": {
         "message": "メディアフィードバックがあります。"
+    },
+    "you_may_not_upload_an_empty_file_11c31eb2": {
+        "message": "空のファイルをアップロードすることはできません。"
     },
     "you_must_provide_a_date_and_time_a86839d2": {
         "message": "日時を指定する必要があります。"

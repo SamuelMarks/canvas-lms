@@ -63,6 +63,10 @@ module Api::V1::AssignmentGroup
           in_closed_grading_period_hash(group.context, assignments)
       end
 
+      if includes.include?('score_statistics')
+        ActiveRecord::Associations::Preloader.new.preload(assignments, :score_statistic)
+      end
+
       hash['assignments'] = assignments.map do |assignment|
         overrides = if opts[:overrides].present?
           opts[:overrides].select { |override| override.assignment_id == assignment.id }
@@ -73,11 +77,13 @@ module Api::V1::AssignmentGroup
         json = assignment_json(assignment, user, session,
           include_discussion_topic: includes.include?('discussion_topic'),
           include_all_dates: includes.include?('all_dates'),
+          include_can_edit: includes.include?('can_edit'),
           include_module_ids: includes.include?('module_ids'),
           include_grades_published: includes.include?('grades_published'),
           override_dates: opts[:override_assignment_dates],
           preloaded_user_content_attachments: user_content_attachments,
           include_visibility: includes.include?('assignment_visibility'),
+          include_score_statistics: includes.include?('score_statistics'),
           assignment_visibilities: opts[:assignment_visibilities].try(:[], assignment.id),
           exclude_response_fields: exclude_fields,
           overrides: overrides,
@@ -118,7 +124,7 @@ module Api::V1::AssignmentGroup
     assignment_ids = assignments.pluck(:id).join(",")
     last_grading_period = grading_periods.order(end_date: :desc).first
 
-    submissions = ActiveRecord::Base.connection.select_all(<<-SQL)
+    submissions = ActiveRecord::Base.connection.select_all(<<~SQL)
       SELECT DISTINCT ON (assignment_id) assignment_id, user_id
       FROM #{Submission.quoted_table_name}
       WHERE

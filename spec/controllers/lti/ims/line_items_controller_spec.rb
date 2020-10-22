@@ -115,6 +115,11 @@ module Lti
             end.to change(Lti::LineItem, :count).by(1)
           end
 
+          it 'sets coupled to false on the new line item' do
+            send_request
+            expect(Lti::LineItem.last.coupled).to eq(false)
+          end
+
           it 'responds with 404 if course is concluded' do
             course.update!(workflow_state: 'completed')
             send_request
@@ -184,6 +189,7 @@ module Lti
 
         context 'when using the uncoupled model' do
           let(:params_overrides) { super().except(:resourceLinkId) }
+          let(:item) { Lti::LineItem.find(parsed_response_body['id'].split('/').last) }
 
           it_behaves_like 'the line item create endpoint'
 
@@ -216,8 +222,6 @@ module Lti
           end
 
           context 'when a new assignment is created' do
-            let(:item) { Lti::LineItem.find(parsed_response_body['id'].split('/').last) }
-
             before do
               send_request
             end
@@ -242,7 +246,11 @@ module Lti
               expect(item.assignment.context).to eq course
             end
 
-            context 'when submission type is external tool' do
+            context 'when submission type is external tool and the URL is not for an existing tool' do
+              # I'm not sure what the expected behavior is here exactly. We currently
+              # create an assignment and line item but no resource link, tool for the ContentTag --
+              # ContentExternalTool.from_content_tag(assignment.external_tool_tag, course) is nil
+
               let(:params_overrides) {
                 super().merge(LineItem::AGS_EXT_SUBMISSION_TYPE => {
                   type: "external_tool",
@@ -274,6 +282,65 @@ module Lti
               it 'returns a 400 error response code' do
                 expect(response).to have_http_status(:bad_request)
               end
+            end
+          end
+
+          context 'when submission type is external tool and and tool URL matches a tool' do
+            let(:params_overrides) {
+              super().merge(LineItem::AGS_EXT_SUBMISSION_TYPE => {
+                type: "external_tool",
+                external_tool_url: tool.url
+              })
+            }
+
+            it_behaves_like 'the line item create endpoint'
+
+            it 'creates exactly one assignment and resource link' do
+              expect do
+                send_request
+              end.to change(Assignment, :count).by(1).
+                and change(Lti::ResourceLink, :count).by(1)
+            end
+
+            it 'creates a line item with resource link, tag, and extensions' do
+              send_request
+              expect(item.resource_link).to_not be_blank
+              expect(item.resource_link.resource_link_id).to_not be_blank
+              expect(item.tag).to_not be_blank
+              expect(item.extensions).to_not be_blank
+            end
+
+            it 'returns the resource link in the response' do
+              send_request
+              expected_response = {
+                "https://canvas.instructure.com/lti/submission_type" => {
+                  external_tool_url: tool.url,
+                  type: 'external_tool'
+                },
+                id: "http://test.host/api/lti/courses/#{course.id}/line_items/#{item.id}",
+                scoreMaximum: score_max.to_f,
+                label: label,
+                resourceId: resource_id,
+                tag: tag,
+                resourceLinkId: item.resource_link.resource_link_id
+              }.with_indifferent_access
+
+              expect(parsed_response_body).to eq expected_response
+            end
+
+            it 'sets the assignment submission type to external tool' do
+              send_request
+              expect(item.assignment.submission_types).to eq 'external_tool'
+            end
+
+            it 'sets the assignment external url' do
+              send_request
+              expect(item.assignment.external_tool_tag.url).to eq tool.url
+            end
+
+            it 'sets the extension on return' do
+              send_request
+              expect(json[LineItem::AGS_EXT_SUBMISSION_TYPE][:external_tool_url]).to eq tool.url
             end
           end
         end
@@ -349,6 +416,23 @@ module Lti
           it 'updates the assignment name if default line item' do
             send_request
             expect(line_item.reload.assignment.name).to eq 'a new label!'
+          end
+        end
+
+        context do
+          let(:new_score_maximum) { 42.0 }
+          let(:params_overrides) { super().merge(scoreMaximum: new_score_maximum) }
+          let(:line_item) { assignment.line_items.first }
+
+          it 'updates the assignment points_possible if ResourceLink is absent' do
+            line_item.update!(resource_link: nil)
+            send_request
+            expect(line_item.reload.assignment.points_possible).to eq new_score_maximum
+          end
+
+          it 'updates the assignment points_possible if default line item' do
+            send_request
+            expect(line_item.reload.assignment.points_possible).to eq new_score_maximum
           end
         end
 
@@ -639,7 +723,8 @@ module Lti
           let(:coupled_line_item) do
             assignment.line_items.first.update!(
               tag: tag,
-              resource_id: resource_id
+              resource_id: resource_id,
+              coupled: true
             )
             assignment.line_items.first
           end
@@ -649,7 +734,8 @@ module Lti
               assignment: assignment,
               resource_link: resource_link,
               tag: tag,
-              resource_id: resource_id
+              resource_id: resource_id,
+              coupled: false
             )
           end
           let(:line_item) do
@@ -664,6 +750,7 @@ module Lti
             it 'does not allow destroying default line items' do
               send_request
               expect(response).to be_unauthorized
+              expect(Lti::LineItem.active.find_by(id: line_item_id)).not_to be_nil
             end
           end
         end
@@ -674,13 +761,42 @@ module Lti
               course: course,
               tag: tag,
               resource_id: resource_id,
-              client_id: developer_key.global_id
+              client_id: developer_key.global_id,
+              coupled: false
             )
           end
 
-          it 'deletes the correct line item' do
+          it 'deletes the correct line item but not the assignment' do
             send_request
             expect(Lti::LineItem.active.find_by(id: line_item_id)).to be_nil
+            expect(line_item.assignment).to be_active
+          end
+
+          it 'responds with no content' do
+            send_request
+            expect(response).to be_no_content
+          end
+        end
+
+        context 'when the line item is a tool-created (uncoupled) assignment line item' do
+          let(:line_item) do
+            assignment.line_items.first.update!(
+              tag: tag,
+              resource_id: resource_id,
+              coupled: false
+            )
+            assignment.line_items.first
+          end
+
+          it_behaves_like 'the line item destroy endpoint'
+
+          it 'deletes the resource link and assignment' do
+            assignment_id = line_item.assignment_id
+            resource_link_id = line_item.lti_resource_link_id
+            send_request
+            expect(Lti::LineItem.active.find_by(id: line_item_id)).to be_nil
+            expect(Lti::ResourceLink.active.find_by(id: resource_link_id)).to be_nil
+            expect(Assignment.active.find_by(id: assignment_id)).to be_nil
           end
 
           it 'responds with no content' do

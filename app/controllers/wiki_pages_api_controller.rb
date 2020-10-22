@@ -470,7 +470,7 @@ class WikiPagesApiController < ApplicationController
   #
   # @returns PageRevision
   def show_revision
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       if params.has_key?(:revision_id)
         permission = :read_revisions
         revision = @page.versions.where(number: params[:revision_id].to_i).first!
@@ -526,19 +526,21 @@ class WikiPagesApiController < ApplicationController
   end
 
   def get_wiki_page
-    @wiki = @context.wiki
+    GuardRail.activate(%w{update update_front_page}.include?(params[:action]) ? :primary : :secondary) do
+      @wiki = @context.wiki
 
-    # attempt to find an existing page
-    url = params[:url]
-    if is_front_page_action?
-      @page = @wiki.front_page
-    else
-      @page = @wiki.find_page(url)
+      # attempt to find an existing page
+      @url = params[:url]
+      if is_front_page_action?
+        @page = @wiki.front_page
+      else
+        @page = @wiki.find_page(@url)
+      end
     end
 
     # create a new page if the page was not found
     unless @page
-      @page = @wiki.build_wiki_page(@current_user, :url => url)
+      @page = @wiki.build_wiki_page(@current_user, :url => @url)
       if is_front_page_action?
         @page.workflow_state = 'active'
         @set_front_page = true
@@ -659,7 +661,7 @@ class WikiPagesApiController < ApplicationController
 
   def assign_todo_date
     return if params.dig(:wiki_page, :student_todo_at).nil? && params.dig(:wiki_page, :student_planner_checkbox).nil?
-    if @context.root_account.feature_enabled?(:student_planner) && @page.context.grants_any_right?(@current_user, session, :manage_content)
+    if @page.context.grants_any_right?(@current_user, session, :manage_content)
       @page.todo_date = params.dig(:wiki_page, :student_todo_at) if params.dig(:wiki_page, :student_todo_at)
       # Only clear out if the checkbox is explicitly specified in the request
       if params[:wiki_page].key?("student_planner_checkbox") &&

@@ -120,7 +120,8 @@ module Api::V1::Assignment
       override_dates: true,
       needs_grading_count_by_section: false,
       exclude_response_fields: [],
-      include_planner_override: false
+      include_planner_override: false,
+      include_can_edit: false
     )
 
     if opts[:override_dates] && !assignment.new_record?
@@ -207,14 +208,6 @@ module Api::V1::Assignment
                                              opts[:preloaded_user_content_attachments] || {})
     end
 
-    root_account = assignment.context.root_account
-    hidden_submissions_scope = if root_account.feature_enabled?(:allow_postable_submission_comments)
-      assignment.submissions.postable
-    else
-      assignment.submissions.graded
-    end
-    hash["hidden_submissions_count"] = hidden_submissions_scope.where(posted_at: nil).count
-
     can_manage = assignment.context.grants_any_right?(user, :manage, :manage_grades, :manage_assignments)
     hash['muted'] = assignment.muted?
     hash['html_url'] = course_assignment_url(assignment.context_id, assignment)
@@ -224,11 +217,14 @@ module Api::V1::Assignment
 
     if assignment.external_tool? && assignment.external_tool_tag.present?
       external_tool_tag = assignment.external_tool_tag
-      hash['external_tool_tag_attributes'] = {
+      tool_attributes = {
         'url' => external_tool_tag.url,
         'new_tab' => external_tool_tag.new_tab,
-        'resource_link_id' => assignment.lti_resource_link_id
+        'resource_link_id' => assignment.lti_resource_link_id,
+        'external_data' => external_tool_tag.external_data
       }
+      tool_attributes.merge!(external_tool_tag.attributes.slice('content_type', 'content_id')) if external_tool_tag.content_id
+      hash['external_tool_tag_attributes'] = tool_attributes
       hash['url'] = sessionless_launch_url(@context,
                                            :launch_type => 'assessment',
                                            :assignment_id => assignment.id)
@@ -322,6 +318,16 @@ module Api::V1::Assignment
       end
     end
 
+    if opts[:include_can_edit]
+      can_edit_assignment = assignment.user_can_update?(user, session)
+      hash['can_edit'] = can_edit_assignment
+      hash['all_dates']&.each do |date_hash|
+        in_closed_grading_period = date_in_closed_grading_period?(date_hash['due_at'])
+        date_hash['in_closed_grading_period'] = in_closed_grading_period
+        date_hash['can_edit'] = can_edit_assignment && (!in_closed_grading_period || !constrained_by_grading_periods?)
+      end
+    end
+
     if opts[:include_module_ids]
       modulable = case assignment.submission_types
                   when 'online_quiz' then assignment.quiz
@@ -347,11 +353,27 @@ module Api::V1::Assignment
     end
 
     if submission = opts[:submission]
+      should_show_statistics = opts[:include_score_statistics] && assignment.can_view_score_statistics?(user)
+
       if submission.is_a?(Array)
         ActiveRecord::Associations::Preloader.new.preload(submission, :quiz_submission) if assignment.quiz?
         hash['submission'] = submission.map { |s| submission_json(s, assignment, user, session, assignment.context, params) }
+        should_show_statistics = should_show_statistics && submission.any? do |s|
+          s.assignment = assignment # Avoid extra query in submission.hide_grade_from_student? to get assignment
+          s.eligible_for_showing_score_statistics?
+        end
       else
         hash['submission'] = submission_json(submission, assignment, user, session, assignment.context, params)
+        submission.assignment = assignment # Avoid extra query in submission.hide_grade_from_student? to get assignment
+        should_show_statistics = should_show_statistics && submission.eligible_for_showing_score_statistics?
+      end
+
+      if should_show_statistics && (stats = assignment&.score_statistic)
+        hash["score_statistics"] = {
+          'min' => stats.minimum.to_f.round(1),
+          'max': stats.maximum.to_f.round(1),
+          'mean': stats.mean.to_f.round(1)
+        }
       end
     end
 
@@ -382,6 +404,13 @@ module Api::V1::Assignment
     hash['anonymize_students'] = assignment.anonymize_students?
 
     hash['require_lockdown_browser'] = assignment.settings&.dig('lockdown_browser', 'require_lockdown_browser') || false
+
+    if opts[:include_can_submit] && !assignment.quiz? && !submission.is_a?(Array)
+      hash['can_submit'] = assignment.expects_submission? &&
+          assignment.rights_status(user, :submit)[:submit] &&
+          (submission.nil? || submission.attempts_left.nil? || submission.attempts_left > 0)
+    end
+
     hash
   end
 
@@ -490,9 +519,6 @@ module Api::V1::Assignment
     DueDateCacher.recompute(prepared_create[:assignment], update_grades: calc_grades, executing_user: user)
     response
   rescue ActiveRecord::RecordInvalid
-    false
-  rescue Lti::AssignmentSubscriptionsHelper::AssignmentSubscriptionError => e
-    assignment.errors.add('plagiarism_tool_subscription', e)
     false
   end
 
@@ -646,6 +672,8 @@ module Api::V1::Assignment
       end
       update_params["submission_types"] = update_params["submission_types"].join(',')
     end
+
+    update_params["submission_types"] ||= "not_graded" if update_params["grading_type"] == "not_graded"
 
     if update_params.key?("assignment_group_id")
       ag_id = update_params.delete("assignment_group_id").presence

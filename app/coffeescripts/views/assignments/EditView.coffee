@@ -41,8 +41,9 @@ import SisValidationHelper from '../../util/SisValidationHelper'
 import SimilarityDetectionTools from 'jsx/assignments/AssignmentConfigurationTools'
 import ModeratedGradingFormFieldGroup from 'jsx/assignments/ModeratedGradingFormFieldGroup'
 import AllowedAttemptsWithState from 'jsx/assignments/allowed_attempts/AllowedAttemptsWithState'
-import DefaultToolForm, { toolSubmissionType } from 'jsx/assignments/DefaultToolForm'
+import DefaultToolForm from 'jsx/assignments/DefaultToolForm'
 import AssignmentExternalTools from 'jsx/assignments/AssignmentExternalTools'
+import ExternalToolModalLauncher from 'jsx/shared/ExternalToolModalLauncher.js'
 import * as returnToHelper from '../../../jsx/shared/helpers/returnToHelper'
 import 'jqueryui/dialog'
 import 'jquery.toJSON'
@@ -77,7 +78,12 @@ export default class EditView extends ValidatedFormView
   GRADING_TYPE_SELECTOR = '#grading_type_selector'
   GRADED_ASSIGNMENT_FIELDS = '#graded_assignment_fields'
   EXTERNAL_TOOL_SETTINGS = '#assignment_external_tool_settings'
+  EXTERNAL_TOOL_SETTINGS_NEW_TAB = '#external_tool_new_tab_container'
   DEFAULT_EXTERNAL_TOOL_CONTAINER = '#default_external_tool_container'
+  EXTERNAL_TOOL_PLACEMENT_LAUNCH_CONTAINER = '#assignment_submission_type_selection_tool_launch_container'
+  EXTERNAL_TOOL_PLACEMENT_LAUNCH_BUTTON = '#assignment_submission_type_selection_launch_button'
+  EXTERNAL_TOOL_PLACEMENT_LAUNCH_BUTTON_TEXT = '#assignment_submission_type_selection_launch_button_text'
+  EXTERNAL_TOOL_DATA = '#assignment_submission_type_external_data'
   ALLOWED_ATTEMPTS_CONTAINER = '#allowed_attempts_fields'
   GROUP_CATEGORY_SELECTOR = '#group_category_selector'
   PEER_REVIEWS_FIELDS = '#assignment_peer_reviews_fields'
@@ -96,6 +102,8 @@ export default class EditView extends ValidatedFormView
   SIMILARITY_DETECTION_TOOLS = '#similarity_detection_tools'
   ANONYMOUS_GRADING_BOX = '#assignment_anonymous_grading'
   ASSIGNMENT_EXTERNAL_TOOLS = '#assignment_external_tools'
+
+  LTI_EXT_MASTERY_CONNECT = 'https://canvas.instructure.com/lti/mastery_connect_assessment'
 
   els: _.extend({}, @::els, do ->
     els = {}
@@ -120,7 +128,12 @@ export default class EditView extends ValidatedFormView
     els["#{EXTERNAL_TOOLS_NEW_TAB}"] = '$externalToolsNewTab'
     els["#{EXTERNAL_TOOLS_CONTENT_TYPE}"] = '$externalToolsContentType'
     els["#{EXTERNAL_TOOLS_CONTENT_ID}"] = '$externalToolsContentId'
+    els["#{EXTERNAL_TOOL_DATA}"] = '$externalToolExternalData'
+    els["#{EXTERNAL_TOOL_SETTINGS_NEW_TAB}"] = '$externalToolNewTabContainer'
     els["#{DEFAULT_EXTERNAL_TOOL_CONTAINER}"] = '$defaultExternalToolContainer'
+    els["#{EXTERNAL_TOOL_PLACEMENT_LAUNCH_CONTAINER}"] = '$externalToolPlacementLaunchContainer'
+    els["#{EXTERNAL_TOOL_PLACEMENT_LAUNCH_BUTTON}"] = '$externalToolPlacementLaunchButton'
+    els["#{EXTERNAL_TOOL_PLACEMENT_LAUNCH_BUTTON_TEXT}"] = '$externalToolPlacementLaunchButtonText'
     els["#{ALLOWED_ATTEMPTS_CONTAINER}"] = '$allowedAttemptsContainer'
     els["#{ASSIGNMENT_POINTS_POSSIBLE}"] = '$assignmentPointsPossible'
     els["#{ASSIGNMENT_POINTS_CHANGE_WARN}"] = '$pointsChangeWarning'
@@ -344,13 +357,94 @@ export default class EditView extends ValidatedFormView
     subVal = @$submissionType.val()
     @$onlineSubmissionTypes.toggleAccessibly subVal == 'online'
     @$externalToolSettings.toggleAccessibly subVal == 'external_tool'
-    @$groupCategorySelector.toggleAccessibly subVal != 'external_tool'
-    @$peerReviewsFields.toggleAccessibly subVal != 'external_tool'
+
+    isPlacementTool = subVal.includes("external_tool_placement")
+    @$externalToolPlacementLaunchContainer.toggleAccessibly(isPlacementTool)
+    @handlePlacementExternalToolSelect(subVal) if isPlacementTool
+
+    @$groupCategorySelector.toggleAccessibly subVal != 'external_tool' && !isPlacementTool
+    @$peerReviewsFields.toggleAccessibly subVal != 'external_tool' && !isPlacementTool
     @$similarityDetectionTools.toggleAccessibly subVal == 'online' && ENV.PLAGIARISM_DETECTION_PLATFORM
     @$defaultExternalToolContainer.toggleAccessibly subVal == 'default_external_tool'
-    @$allowedAttemptsContainer.toggleAccessibly subVal == 'online' || subVal == 'external_tool'
+    @$allowedAttemptsContainer.toggleAccessibly subVal == 'online' || subVal == 'external_tool' || isPlacementTool
     if subVal == 'online'
       @handleOnlineSubmissionTypeChange()
+    @$externalToolNewTabContainer.toggleAccessibly subVal.includes('external_tool')
+
+  handlePlacementExternalToolSelect: (selection) =>
+    toolId = selection.replace("external_tool_placement_", "")
+    # set the hidden inputs so we'll save the tool on the content tag the way we would normally
+    @$externalToolsContentId.val(toolId)
+    @$externalToolsContentType.val('context_external_tool')
+
+    @selectedTool = _.find(@model.submissionTypeSelectionTools(), (tool) -> toolId == tool.id)
+
+    # this will prevent overriding URL when data is already saved
+    if (!@$externalToolExternalData.val())
+      @$externalToolsUrl.val(@selectedTool.external_url)
+
+    @$externalToolPlacementLaunchButtonText.text(@selectedTool.title)
+    @$externalToolPlacementLaunchButton.click(() => @handleSubmissionTypeSelectionLaunch())
+
+  handleSubmissionTypeSelectionLaunch: =>
+    @renderSubmissionTypeSelectionDialog(true)
+
+  handleSubmissionTypeSelectionDialogClose: =>
+    @renderSubmissionTypeSelectionDialog(false)
+
+  renderSubmissionTypeSelectionDialog: (open) =>
+    contextInfo = ENV.context_asset_string.split('_')
+    contextType = contextInfo[0]
+    contextId = parseInt(contextInfo[1], 10)
+
+    props = {
+      tool: {
+        definition_id: @selectedTool.id,
+        placements: {
+          submission_type_selection: {
+            launch_width: @selectedTool.selection_width,
+            launch_height: @selectedTool.selection_height
+          }
+        }
+      }
+      title: @selectedTool.title
+      isOpen: open
+      onRequestClose: @handleSubmissionTypeSelectionDialogClose
+      contextType: contextType
+      contextId: contextId
+      launchType: 'submission_type_selection'
+      onExternalContentReady: @handleExternalContentReady
+    }
+
+    mountPoint = document.querySelector('#assignment_submission_type_selection_tool_dialog')
+    dialog = React.createElement(ExternalToolModalLauncher, props)
+    ReactDOM.render(dialog, mountPoint)
+
+  handleExternalContentReady: (data) =>
+    if !data.contentItems || data.contentItems.length == 0
+      return
+    item = data.contentItems[0]
+    @$externalToolsUrl.val(item.url)
+    if (item.title)
+      @$name.val(item.title)
+
+    mc_ext = item[LTI_EXT_MASTERY_CONNECT]
+    if mc_ext
+      mc_ext['key'] = LTI_EXT_MASTERY_CONNECT
+      @$assignmentPointsPossible.val(mc_ext.points)
+      @$externalToolExternalData.val(JSON.stringify(mc_ext))
+      $("#mc_external_data_assessment").text(item.title)
+      $("#mc_external_data_points").text(mc_ext.points + " " + I18n.t('points'))
+      $("#mc_external_data_objectives").text(mc_ext.objectives)
+      $("#mc_external_data_tracker").text(mc_ext.trackerName)
+      $("#mc_external_data_tracker_alignment").text(mc_ext.trackerAlignment)
+
+      student_count_text = I18n.t({
+        zero: '0 Students',
+        one: '1 Student',
+        other: '%{count} Students'
+      }, {count: mc_ext.studentCount})
+      $("#mc_external_data_students").text(student_count_text)
 
   handleOnlineSubmissionTypeChange: (env) =>
     showConfigTools = @$onlineSubmissionTypes.find(ALLOW_FILE_UPLOADS).attr('checked') ||
@@ -407,7 +501,7 @@ export default class EditView extends ValidatedFormView
 
     _.extend data,
       use_rce_enhancements: ENV?.use_rce_enhancements
-      assignment_attempts: ENV?.FEATURES?.assignment_attempts
+      assignment_attempts: ENV?.assignment_attempts_enabled
       kalturaEnabled: ENV?.KALTURA_ENABLED or false
       postToSISEnabled: ENV?.POST_TO_SIS or false
       postToSISName: ENV.SIS_NAME
@@ -513,7 +607,7 @@ export default class EditView extends ValidatedFormView
     @cacheAssignmentSettings()
 
     # Get the submission type if an alias type is used (e.g. default_external_tool)
-    $(SUBMISSION_TYPE).val(toolSubmissionType($(SUBMISSION_TYPE).val()))
+    $(SUBMISSION_TYPE).val(@toolSubmissionType($(SUBMISSION_TYPE).val()))
 
     if @dueDateOverrideView.containsSectionsWithoutOverrides()
       sections = @dueDateOverrideView.sectionsWithoutOverrides()
@@ -529,6 +623,12 @@ export default class EditView extends ValidatedFormView
       missingDateDialog.render()
     else
       super
+
+  toolSubmissionType: (submissionType) ->
+    if (submissionType == 'default_external_tool' || submissionType.includes("external_tool_placement"))
+      'external_tool'
+    else
+      submissionType
 
   saveAndPublish: (event) ->
     @shouldPublish = true
@@ -713,7 +813,7 @@ export default class EditView extends ValidatedFormView
     errors
 
   _validateAllowedAttempts: (data, errors) =>
-    return errors unless ENV?.FEATURES?.assignment_attempts
+    return errors unless ENV?.assignment_attempts_enabled
     return errors if @lockedItems.settings # field will be disabled and not submitted
     value = parseInt(data.allowed_attempts, 10)
     unless value > 0 || value == -1
@@ -819,7 +919,7 @@ export default class EditView extends ValidatedFormView
     ReactDOM.render(formFieldGroup, mountPoint)
 
   renderAllowedAttempts: ->
-    return if !ENV?.FEATURES?.assignment_attempts
+    return if !ENV?.assignment_attempts_enabled
     props = {
       limited: @model.get('allowed_attempts') > 0
       attempts: @model.get('allowed_attempts')

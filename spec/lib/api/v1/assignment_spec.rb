@@ -73,7 +73,6 @@ describe "Api::V1::Assignment" do
     end
 
     it "includes an associated planner override when flag is passed" do
-      assignment.context.root_account.enable_feature!(:student_planner)
       po = planner_override_model(user: user, plannable: assignment)
       json = api.assignment_json(assignment, user, session,
                                  {include_planner_override: true})
@@ -81,21 +80,11 @@ describe "Api::V1::Assignment" do
       expect(json['planner_override']['id']).to eq po.id
     end
 
-    it "includes the assignment's post policy when feature enabled" do
-      assignment.course.enable_feature!(:new_gradebook)
-      PostPolicy.enable_feature!
+    it "includes the assignment's post policy" do
       assignment.post_policy.update!(post_manually: true)
 
       json = api.assignment_json(assignment, user, session)
       expect(json["post_manually"]).to be true
-    end
-
-    it "does not include the assignment's post policy when feature disabled" do
-      PostPolicy.disable_feature!
-      assignment.post_policy.update!(post_manually: true)
-
-      json = api.assignment_json(assignment, user, session)
-      expect(json).not_to have_key "post_manually"
     end
 
     it "returns nil for planner override when flag is passed and there is no override" do
@@ -125,49 +114,6 @@ describe "Api::V1::Assignment" do
         assignment.update_attribute(:allowed_attempts, 2)
         json = api.assignment_json(assignment, user, session, {override_dates: false})
         expect(json["allowed_attempts"]).to eq(2)
-      end
-    end
-
-    describe "hidden_submissions_count attribute" do
-      before do
-        PostPolicy.enable_feature!
-        assignment.course.enable_feature!(:new_gradebook)
-        @student = assignment.course.enroll_student(User.create!, enrollment_state: :active).user
-        @teacher = assignment.course.enroll_teacher(User.create!, enrollment_state: :active).user
-        assignment.ensure_post_policy(post_manually: true)
-      end
-
-      it "counts submissions that are unposted and have a grade" do
-        assignment.grade_student(@student, grader: @teacher, score: 10)
-        json = api.assignment_json(assignment, @teacher, session)
-        expect(json["hidden_submissions_count"]).to be 1
-      end
-
-      it "does not count submissions that are unposted and have only visible comments" do
-        submission = assignment.submissions.find_by(user: @student)
-        submission.add_comment(author: @student, comment: "this assignment rocks!")
-        json = api.assignment_json(assignment, @teacher, session)
-        expect(json["hidden_submissions_count"]).to be 0
-      end
-
-      it "does not count posted submissions" do
-        assignment.ensure_post_policy(post_manually: false)
-        assignment.grade_student(@student, grader: @teacher, score: 10)
-        json = api.assignment_json(assignment, @teacher, session)
-        expect(json["hidden_submissions_count"]).to be 0
-      end
-
-      context "when allow_postable_submission_comments feature is enabled" do
-        before do
-          assignment.course.root_account.enable_feature!(:allow_postable_submission_comments)
-        end
-
-        it "counts submissions that are unposted and have a hidden comment" do
-          submission = assignment.submissions.find_by(user: @student)
-          submission.add_comment(author: @teacher, comment: "good jerb!", hidden: true)
-          json = api.assignment_json(assignment, @teacher, session)
-          expect(json["hidden_submissions_count"]).to be 1
-        end
       end
     end
 

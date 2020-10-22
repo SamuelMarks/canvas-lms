@@ -91,34 +91,21 @@ describe PostPolicy do
     end
   end
 
-  describe "post policies feature" do
-    describe ".feature_enabled?" do
-      it "returns true if the post_policies_enabled setting is set to true" do
-        Setting.set("post_policies_enabled", true)
-        expect(PostPolicy).to be_feature_enabled
-      end
+  describe "root account ID" do
+    let_once(:root_account) { Account.create! }
+    let_once(:subaccount) { Account.create(root_account: root_account) }
+    let_once(:course) { Course.create!(account: subaccount) }
 
-      it "returns false if the post_policies_enabled setting is set to any other value" do
-        Setting.set("post_policies_enabled", "NO")
-        expect(PostPolicy).not_to be_feature_enabled
-      end
-
-      it "returns false if no value is set for the setting" do
-        expect(PostPolicy).not_to be_feature_enabled
+    context "for a post policy associated with a course" do
+      it "is set to the course's root account ID" do
+        expect(course.default_post_policy.root_account_id).to eq root_account.id
       end
     end
 
-    describe ".enable_feature!" do
-      it "sets the post_policies_enabled setting to 'true'" do
-        PostPolicy.enable_feature!
-        expect(Setting.get("post_policies_enabled", false)).to eq "true"
-      end
-    end
-
-    describe ".disable_feature!" do
-      it "sets the post_policies_enabled setting to 'false'" do
-        PostPolicy.disable_feature!
-        expect(Setting.get("post_policies_enabled", false)).to eq "false"
+    context "for a post policy associated with an assignment" do
+      it "is set to the associated course's root account ID" do
+        assignment = course.assignments.create!
+        expect(assignment.post_policy.root_account_id).to eq root_account.id
       end
     end
   end

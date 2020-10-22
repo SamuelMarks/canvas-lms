@@ -20,7 +20,6 @@ require File.expand_path(File.dirname(__FILE__) + '/../../spec_helper.rb')
 require File.expand_path(File.dirname(__FILE__) + '/../../lib/canvas/draft_state_validations_spec.rb')
 
 describe Quizzes::Quiz do
-
   before :once do
     course_factory
   end
@@ -33,6 +32,7 @@ describe Quizzes::Quiz do
     let(:default_false_values) do
       Quizzes::Quiz.where(id: @quiz).pluck(
         :shuffle_answers,
+        :disable_timer_autosubmission,
         :could_be_locked,
         :anonymous_submissions,
         :require_lockdown_browser,
@@ -49,6 +49,7 @@ describe Quizzes::Quiz do
     it "saves boolean attributes as false if they are set to nil" do
       @quiz.update!(
         shuffle_answers: nil,
+        disable_timer_autosubmission: nil,
         could_be_locked: nil,
         anonymous_submissions: nil,
         require_lockdown_browser: nil,
@@ -72,6 +73,7 @@ describe Quizzes::Quiz do
     it "saves boolean attributes as false if they are set to false" do
       @quiz.update!(
         shuffle_answers: false,
+        disable_timer_autosubmission: false,
         could_be_locked: false,
         anonymous_submissions: false,
         require_lockdown_browser: false,
@@ -96,6 +98,7 @@ describe Quizzes::Quiz do
       allow(Quizzes::Quiz).to receive(:lockdown_browser_plugin_enabled?).and_return(true)
       @quiz.update!(
         shuffle_answers: true,
+        disable_timer_autosubmission: true,
         could_be_locked: true,
         anonymous_submissions: true,
         require_lockdown_browser: true,
@@ -169,28 +172,16 @@ describe Quizzes::Quiz do
       expect(@quiz).not_to be_anonymize_students
     end
 
-    it 'returns true if the assignment is anonymous and muted' do
+    it 'returns true if the assignment anonymizes students' do
       @quiz.assignment = @assignment
-      @assignment.anonymous_grading = true
-      @assignment.muted = true
+      allow(@assignment).to receive(:anonymize_students?).and_return(true)
       expect(@quiz).to be_anonymize_students
     end
 
-    it 'returns false if the assignment is anonymous and unmuted' do
+    it 'returns false if the assignment does not anonymize students' do
       @quiz.assignment = @assignment
-      @assignment.anonymous_grading = true
+      allow(@assignment).to receive(:anonymize_students?).and_return(false)
       expect(@quiz).not_to be_anonymize_students
-    end
-
-    it 'returns false if the assignment is not anonymous' do
-      @quiz.assignment = @assignment
-      expect(@quiz).not_to be_anonymize_students
-    end
-
-    it 'calls Assignment#anonymize_students if an assignment is present' do
-      @quiz.assignment = @assignment
-      expect(@assignment).to receive(:anonymize_students?).once
-      @quiz.anonymize_students?
     end
   end
 
@@ -430,11 +421,12 @@ describe Quizzes::Quiz do
     expect(q.assignment.messages_sent).to be_empty
   end
 
-  it "should send a message if notify_of_update is set" do
+  it "should send a message if notify_of_update is set and grades are posted" do
     Notification.create!(:name => 'Assignment Changed')
     @course.offer
     student_in_course(active_all: true)
     a = @course.assignments.create!(:title => "some assignment", :points_possible => 5)
+    a.unmute!
     expect(a.points_possible).to eql(5.0)
     expect(a.submission_types).not_to eql("online_quiz")
     a.update_attribute(:created_at, Time.now - (40 * 60))
@@ -1112,6 +1104,37 @@ describe Quizzes::Quiz do
     it "returns true for students" do
       @student = student_in_course(course: @course).user
       expect(@quiz.shuffle_answers_for_user?(@student)).to be_truthy
+    end
+  end
+
+  describe "timer_autosubmit_disabled?" do
+    let(:account) { Account.default }
+    let(:course){ Course.create!(root_account: account) }
+
+    before do
+      @quiz = course.quizzes.create!
+    end
+
+    it "returns false when feature flag is off" do
+      @course.root_account.set_feature_flag! 'timer_without_autosubmission', 'off'
+      expect(@quiz.timer_autosubmit_disabled?).to be(false)
+      @quiz.update({
+        disable_timer_autosubmission: true
+      })
+      expect(@quiz.timer_autosubmit_disabled?).to be(false)
+    end
+
+    it "returns false when feature flag is on and disable_timer_autosubmission is false" do
+      @course.root_account.set_feature_flag! 'timer_without_autosubmission', 'on'
+      expect(@quiz.timer_autosubmit_disabled?).to be(false)
+    end
+
+    it "returns true when feature flag is on and disable_timer_autosubmission is true" do
+      @course.root_account.set_feature_flag! 'timer_without_autosubmission', 'on'
+      @quiz.update({
+        disable_timer_autosubmission: true
+      })
+      expect(@quiz.timer_autosubmit_disabled?).to be(true)
     end
   end
 
@@ -2526,6 +2549,28 @@ describe Quizzes::Quiz do
     it 'returns the value of anonymous_submissions' do
       quiz = @course.quizzes.create!(title: "hello", anonymous_submissions: true)
       expect(quiz.anonymous_grading?).to be true
+    end
+  end
+
+  describe 'before save' do
+    describe 'set_root_account_id' do
+      it 'sets root_account_id using context' do
+        quiz = @course.quizzes.create!(title: 'hello')
+        expect(quiz.root_account).to eq @course.root_account
+      end
+
+      it 'leaves root_account_id nil if no context' do
+        @course.root_account_id = nil
+        quiz = @course.quizzes.create!(title: 'hello')
+        expect(quiz.root_account).to be_nil
+      end
+    end
+  end
+
+  context 'root_account_id' do
+    it "uses root_account value from account" do
+      quiz = @course.quizzes.create!(title: "hello")
+      expect(quiz.root_account_id).to eq Account.default.id
     end
   end
 end

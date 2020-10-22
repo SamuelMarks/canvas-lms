@@ -269,6 +269,13 @@ user's name, but you can customize it here.</td>
 still be provided.</td>
 </tr>
 <tr>
+<td>pronouns</td>
+<td>text</td>
+<td></td>
+<td>✓</td>
+<td>User's preferred pronouns.</td>
+</tr>
+<tr>
 <td>status</td>
 <td>enum</td>
 <td>✓</td>
@@ -496,7 +503,7 @@ specified the default term for the account will be used</td>
 <td>enum</td>
 <td>✓</td>
 <td>✓</td>
-<td>active, deleted, completed</td>
+<td>active, deleted, completed, published</td>
 </tr>
 <tr>
 <td>integration_id</td>
@@ -728,6 +735,14 @@ Ignored for any role other than observer</td>
 <td></td>
 <td>Defaults to false. When true, the enrollment will only allow the user to see
  and interact with users enrolled in the section given by course_section_id. </td>
+</tr>
+<tr>
+<td>notify</td>
+<td>boolean</td>
+<td></td>
+<td></td>
+<td>If true, a notification will be sent to the enrolled user. Notifications are
+ not sent by default. </td>
 </tr>
 </table>
 

@@ -95,6 +95,27 @@ module Types
       load_association(:account)
     end
 
+    field :outcome_proficiency, OutcomeProficiencyType, null: true
+    def outcome_proficiency
+      # This does a recursive lookup of parent accounts, not sure how we could
+      # batch load it in a reasonable way.
+      course.resolved_outcome_proficiency
+    end
+
+    # field :proficiency_ratings_connection, ProficiencyRatingType.connection_type, null: true
+    # def proficiency_ratings_connection
+    #   # This does a recursive lookup of parent accounts, not sure how we could
+    #   # batch load it in a reasonable way.
+    #   outcome_proficiency&.outcome_proficiency_ratings
+    # end
+
+    field :outcome_calculation_method, OutcomeCalculationMethodType, null: true
+    def outcome_calculation_method
+      # This does a recursive lookup of parent accounts, not sure how we could
+      # batch load it in a reasonable way.
+      course.resolved_outcome_calculation_method
+    end
+
     field :sections_connection, SectionType.connection_type, null: true
     def sections_connection
       course.active_course_sections.
@@ -276,6 +297,12 @@ module Types
           attachment&.public_download_url(1.week)
         }
       end
+    end
+
+    field :sis_id, String, null: true
+    def sis_id
+      return nil unless course.grants_any_right?(current_user, :read_sis, :manage_sis)
+      course.sis_course_id
     end
   end
 end

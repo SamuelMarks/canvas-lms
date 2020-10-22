@@ -19,6 +19,8 @@
 class LearningOutcomeGroup < ActiveRecord::Base
   include Workflow
   include MasterCourses::Restrictor
+  extend RootAccountResolver
+
   restrict_columns :state, [:workflow_state]
   self.ignored_columns = %i[migration_id_2 vendor_guid_2]
 
@@ -28,6 +30,7 @@ class LearningOutcomeGroup < ActiveRecord::Base
   belongs_to :context, polymorphic: [:account, :course]
 
   before_save :infer_defaults
+  resolves_root_account through: -> (group) { group.context_id ? group.context.resolved_root_account_id : 0 }
   validates :vendor_guid, length: { maximum: maximum_string_length, allow_nil: true }
   validates_length_of :description, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
   validates_length_of :title, :maximum => maximum_string_length, :allow_nil => true, :allow_blank => true
@@ -59,7 +62,7 @@ class LearningOutcomeGroup < ActiveRecord::Base
   # adds a new link to an outcome to this group. does nothing if a link already
   # exists (an outcome can be linked into a context multiple times by multiple
   # groups, but only once per group).
-  def add_outcome(outcome, skip_touch: false)
+  def add_outcome(outcome, skip_touch: false, migration_id: nil)
     # no-op if the outcome is already linked under this group
     outcome_link = child_outcome_links.active.where(content_id: outcome).first
     return outcome_link if outcome_link
@@ -69,7 +72,8 @@ class LearningOutcomeGroup < ActiveRecord::Base
     child_outcome_links.create(
       content: outcome,
       context: self.context || self,
-      skip_touch: skip_touch
+      skip_touch: skip_touch,
+      migration_id: migration_id
     )
   end
 
@@ -181,7 +185,7 @@ class LearningOutcomeGroup < ActiveRecord::Base
       if !group && force
         group = scope.build :title => context.try(:name) || 'ROOT'
         group.building_default = true
-        Shackles.activate(:master) do
+        GuardRail.activate(:primary) do
           # during course copies/imports, observe may be disabled but import job will
           # not be aware of this lazy object creation
           ActiveRecord::Base.observers.enable LiveEventsObserver do

@@ -17,6 +17,8 @@
 #
 
 class Login::Oauth2Controller < Login::OauthBaseController
+  skip_before_action :verify_authenticity_token
+
   def new
     super
     nonce = session[:oauth2_nonce] = SecureRandom.hex(24)
@@ -29,7 +31,7 @@ class Login::Oauth2Controller < Login::OauthBaseController
       @aac.debug_set(:authorize_url, authorize_url)
     end
 
-    redirect_to delegated_auth_redirect_uri(authorize_url)
+    redirect_to authorize_url
   end
 
   def create
@@ -47,7 +49,7 @@ class Login::Oauth2Controller < Login::OauthBaseController
     provider_attributes = {}
     return unless timeout_protection do
       begin
-        token = @aac.get_token(params[:code], oauth2_login_callback_url)
+        token = @aac.get_token(params[:code], oauth2_login_callback_url, params)
       rescue => e
         @aac.debug_set(:get_token_response, e) if debugging
         raise

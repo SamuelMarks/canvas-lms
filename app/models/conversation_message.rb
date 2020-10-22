@@ -19,8 +19,10 @@
 require 'atom'
 
 class ConversationMessage < ActiveRecord::Base
-  include HtmlTextHelper
+  self.ignored_columns = %i[root_account_id]
 
+  include HtmlTextHelper
+  include ConversationHelper
   include Rails.application.routes.url_helpers
   include SendToStream
   include SimpleTags::ReaderInstanceMethods
@@ -36,6 +38,7 @@ class ConversationMessage < ActiveRecord::Base
   delegate :participants, :to => :conversation
   delegate :subscribed_participants, :to => :conversation
 
+  before_create :set_root_account_ids
   after_create :generate_user_note!
   after_save :update_attachment_associations
 
@@ -58,7 +61,7 @@ class ConversationMessage < ActiveRecord::Base
       # crunch in ruby (generally none, unless a conversation has multiple
       # most-recent messages, i.e. same created_at)
       unless connection.adapter_name == 'PostgreSQL'
-        base_conditions << <<-SQL
+        base_conditions << <<~SQL
           AND conversation_messages.created_at = (
             SELECT MAX(created_at)
             FROM conversation_messages cm2
@@ -69,7 +72,7 @@ class ConversationMessage < ActiveRecord::Base
         SQL
       end
 
-      Shackles.activate(:slave) do
+      GuardRail.activate(:secondary) do
         ret = where(base_conditions).
           joins("JOIN #{ConversationMessageParticipant.quoted_table_name} ON conversation_messages.id = conversation_message_id").
           select("conversation_messages.*, conversation_participant_id, conversation_message_participants.user_id, conversation_message_participants.tags").
@@ -139,6 +142,10 @@ class ConversationMessage < ActiveRecord::Base
   def attachment_ids=(ids)
     ids = author.conversation_attachments_folder.attachments.where(id: ids.map(&:to_i)).pluck(:id) unless ids.empty?
     write_attribute(:attachment_ids, ids.join(','))
+  end
+
+  def relativize_attachment_ids(from_shard:, to_shard:)
+    self.attachment_ids = attachment_ids.map { |id| Shard.relative_id_for(id, from_shard, to_shard) }.sort
   end
 
   def attachments
@@ -249,7 +256,7 @@ class ConversationMessage < ActiveRecord::Base
         t(:subject, "Private message")
       end
       note = format_message(body).first
-      recipient.user_notes.create(:creator => author, :title => title, :note => note)
+      recipient.user_notes.create(creator: author, title: title, note: note, root_account_id: root_account_id)
     end
   end
 
@@ -281,7 +288,8 @@ class ConversationMessage < ActiveRecord::Base
   end
 
   def root_account_id
-    context_id if context_type == 'Account'
+    return nil unless context && context_type == 'Account'
+    context.resolved_root_account_id
   end
 
   def reply_from(opts)

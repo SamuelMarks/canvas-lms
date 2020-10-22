@@ -149,16 +149,16 @@ class MediaObject < ActiveRecord::Base
     return !!info&.dig(:id)
   end
 
-  def self.ensure_media_object(media_id, create_opts = {})
+  def self.ensure_media_object(media_id, **create_opts)
     if !by_media_id(media_id).any?
-      self.send_later_enqueue_args(:create_if_id_exists, { :priority => Delayed::LOW_PRIORITY }, media_id, create_opts)
+      self.send_later_enqueue_args(:create_if_id_exists, { :priority => Delayed::LOW_PRIORITY }, media_id, **create_opts)
     end
   end
 
   # typically call this in a delayed job, since it has to contact kaltura
-  def self.create_if_id_exists(media_id, create_opts = {})
+  def self.create_if_id_exists(media_id, **create_opts)
     if media_id_exists?(media_id) && !by_media_id(media_id).any?
-      create!(create_opts.merge(:media_id => media_id))
+      create!(**create_opts.merge(:media_id => media_id))
     end
   end
 
@@ -224,6 +224,7 @@ class MediaObject < ActiveRecord::Base
     end
     self.total_size = [self.max_size || 0, assets.map{|a| (a[:size] || 0).to_i }.sum].max
     self.save
+    ensure_attachment
     self.data
   end
 
@@ -292,6 +293,34 @@ class MediaObject < ActiveRecord::Base
     self.workflow_state = 'deleted'
     self.attachment_id = nil
     save!
+  end
+
+  def ensure_attachment
+    return if self.attachment_id
+    return unless %w{Account Course Group User}.include?(self.context_type)
+    root_account = context.is_a?(User) ? context.account : context.root_account
+    return unless root_account.feature_enabled?(:autocreate_attachment_from_media_object)
+
+    sources = self.media_sources
+    return unless sources.present?
+
+    attachment = build_attachment({
+      "context" => context,
+      "display_name" => self.title,
+      "filename" => self.title,
+      "content_type" => self.media_type,
+      "media_entry_id" => self.media_id,
+      "workflow_state" => "processed",
+      "folder_id" => Folder.media_folder(context).id
+    })
+
+    url = self.data.dig(:download_url)
+    url = sources.select { |s| s[:isOriginal] == '1' }.first&.dig(:url) if url.blank?
+    url = sources.sort_by { |a| a[:bitrate].to_i }.first&.dig(:url) if url.blank?
+
+    attachment.clone_url(url, :rename, false) # no check_quota because the bits are in kaltura
+    attachment.file_state = "hidden" # in case teachers don't mean for this to be visible to students in the files section
+    attachment.save!
   end
 
   scope :active, -> { where("media_objects.workflow_state<>'deleted'") }

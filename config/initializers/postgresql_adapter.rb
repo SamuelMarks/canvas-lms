@@ -38,6 +38,13 @@ module PostgreSQLAdapterExtensions
                                  }
     ActiveRecord::Base.connection.clear_query_cache
     raw_connection.put_copy_end
+    result = raw_connection.get_result
+    begin
+      result.check
+    rescue => e
+      raise translate_exception(e, "COPY FROM STDIN")
+    end
+    result.cmd_tuples
   end
 
   def quote_text(value)
@@ -51,18 +58,24 @@ module PostgreSQLAdapterExtensions
     end
   end
 
-  def add_foreign_key(from_table, to_table, options = {})
-    raise ArgumentError, "Cannot specify custom options with :delay_validation" if options[:options] && options[:delay_validation]
+  def add_foreign_key(from_table, to_table, delay_validation: false, if_not_exists: false, **options)
+    raise ArgumentError, "Cannot specify custom options with :delay_validation" if options[:options] && delay_validation
 
     # pointless if we're in a transaction
-    options.delete(:delay_validation) if open_transactions > 0
+    delay_validation = false if open_transactions > 0
     options[:column] ||= "#{to_table.to_s.singularize}_id"
     column = options[:column]
 
     foreign_key_name = foreign_key_name(from_table, options)
 
-    if options[:delay_validation]
-      options[:options] = 'NOT VALID'
+    if if_not_exists || delay_validation
+      schema = quote(shard.name)
+      valid = select_value("SELECT convalidated FROM pg_constraint INNER JOIN pg_namespace ON pg_namespace.oid=connamespace WHERE conname='#{foreign_key_name}' AND nspname=#{schema}", "SCHEMA")
+      return if valid == true && if_not_exists
+    end
+
+    if delay_validation
+      options[:validate] = false
       # NOT VALID doesn't fully work through 9.3 at least, so prime the cache to make
       # it as fast as possible. Note that a NOT EXISTS would be faster, but this is
       # the query postgres does for the VALIDATE CONSTRAINT, so we want exactly this
@@ -70,9 +83,8 @@ module PostgreSQLAdapterExtensions
       execute("SELECT fk.#{column} FROM #{quote_table_name(from_table)} fk LEFT OUTER JOIN #{quote_table_name(to_table)} pk ON fk.#{column}=pk.id WHERE pk.id IS NULL AND fk.#{column} IS NOT NULL LIMIT 1")
     end
 
-    super(from_table, to_table, options)
-
-    execute("ALTER TABLE #{quote_table_name(from_table)} VALIDATE CONSTRAINT #{quote_column_name(foreign_key_name)}") if options[:delay_validation]
+    super(from_table, to_table, **options) unless valid == false
+    validate_constraint(from_table, foreign_key_name) if delay_validation
   end
 
   def set_standard_conforming_strings
@@ -120,9 +132,9 @@ module PostgreSQLAdapterExtensions
   # (for instance when using functions like LOWER)
   # this will lead to problems if we try to remove the index (index_exists? will return false)
   def indexes(table_name)
-    schema = shard.name if @config[:use_qualified_names]
+    schema = shard.name
 
-    result = query(<<-SQL, 'SCHEMA')
+    result = query(<<~SQL, 'SCHEMA')
          SELECT distinct i.relname, d.indisunique, d.indkey, pg_get_indexdef(d.indexrelid), t.oid
          FROM pg_class t
          INNER JOIN pg_index d ON t.oid = d.indrelid
@@ -141,7 +153,7 @@ module PostgreSQLAdapterExtensions
       inddef = row[3]
       oid = row[4]
 
-      columns = Hash[query(<<-SQL, "SCHEMA")]
+      columns = Hash[query(<<~SQL, "SCHEMA")]
         SELECT a.attnum, a.attname
         FROM pg_attribute a
         WHERE a.attrelid = #{oid}
@@ -166,10 +178,112 @@ module PostgreSQLAdapterExtensions
 
   # some migration specs test migrations that add concurrent indexes; detect that, and strip the concurrent
   # but _only_ if there isn't another transaction in the stack
-  def add_index_options(_table_name, _column_name, _options = {})
+  def add_index_options(_table_name, _column_name, **)
     index_name, index_type, index_columns, index_options, algorithm, using = super
     algorithm = nil if Rails.env.test? && algorithm == "CONCURRENTLY" && !ActiveRecord::Base.in_transaction_in_test?
     [index_name, index_type, index_columns, index_options, algorithm, using]
+  end
+
+  def add_index(table_name, column_name, options = {})
+    # catch a concurrent index add that fails because it already exists, and is invalid
+    if options[:algorithm] == :concurrently || options[:if_not_exists]
+      column_names = index_column_names(column_name)
+      index_name = options[:name].to_s if options.key?(:name)
+      index_name ||= index_name(table_name, column_names)
+
+      schema = shard.name
+
+      valid = select_value(<<~SQL, 'SCHEMA')
+            SELECT indisvalid
+            FROM pg_class t
+            INNER JOIN pg_index d ON t.oid = d.indrelid
+            INNER JOIN pg_class i ON d.indexrelid = i.oid
+            WHERE i.relkind = 'i'
+              AND i.relname = '#{index_name}'
+              AND t.relname = '#{table_name}'
+              AND i.relnamespace IN (SELECT oid FROM pg_namespace WHERE nspname = #{schema ? "'#{schema}'" : 'ANY (current_schemas(false))'} )
+            LIMIT 1
+      SQL
+      remove_index(table_name, name: index_name, algorithm: :concurrently) if valid == false && options[:algorithm] == :concurrently
+      return if options[:if_not_exists] && valid == true
+    end
+    # CANVAS_RAILS6_1: can stop doing this in Rails 6.2, when it's natively supported
+    options.delete(:if_not_exists)
+    super
+  end
+
+  def remove_index(table_name, options = {})
+    table = ActiveRecord::ConnectionAdapters::PostgreSQL::Utils.extract_schema_qualified_name(table_name.to_s)
+
+    if options.is_a?(Hash) && options.key?(:name)
+      provided_index = ActiveRecord::ConnectionAdapters::PostgreSQL::Utils.extract_schema_qualified_name(options[:name].to_s)
+
+      options[:name] = provided_index.identifier
+      table = ActiveRecord::ConnectionAdapters::PostgreSQL::Name.new(provided_index.schema, table.identifier) unless table.schema.present?
+
+      if provided_index.schema.present? && table.schema != provided_index.schema
+        raise ArgumentError.new("Index schema '#{provided_index.schema}' does not match table schema '#{table.schema}'")
+      end
+    end
+
+    name = index_name_for_remove(table.to_s, options)
+    return if name.nil? && options[:if_exists]
+
+    index_to_remove = ActiveRecord::ConnectionAdapters::PostgreSQL::Name.new(table.schema, name)
+    algorithm =
+      if options.is_a?(Hash) && options.key?(:algorithm)
+        index_algorithms.fetch(options[:algorithm]) do
+          raise ArgumentError.new("Algorithm must be one of the following: #{index_algorithms.keys.map(&:inspect).join(', ')}")
+        end
+      end
+    algorithm = nil if open_transactions > 0
+    if_exists = " IF EXISTS" if options.is_a?(Hash) && options[:if_exists]
+    execute "DROP INDEX #{algorithm} #{if_exists} #{quote_table_name(index_to_remove)}"
+  end
+
+  def index_name_for_remove(table_name, options = {})
+    return options[:name] if can_remove_index_by_name?(options)
+
+    checks = []
+
+    if options.is_a?(Hash)
+      checks << lambda { |i| i.name == options[:name].to_s } if options.key?(:name)
+      column_names = index_column_names(options[:column])
+    else
+      column_names = index_column_names(options)
+    end
+
+    if column_names.present?
+      checks << lambda { |i| index_name(table_name, i.columns) == index_name(table_name, column_names) }
+    end
+
+    raise ArgumentError, "No name or columns specified" if checks.none?
+
+    matching_indexes = indexes(table_name).select { |i| checks.all? { |check| check[i] } }
+
+    if matching_indexes.count > 1
+      raise ArgumentError, "Multiple indexes found on #{table_name} columns #{column_names}. " \
+                                 "Specify an index name from #{matching_indexes.map(&:name).join(', ')}"
+    elsif matching_indexes.none?
+      return if options[:if_exists]
+      raise ArgumentError, "No indexes found on #{table_name} with the options provided."
+    else
+      matching_indexes.first.name
+    end
+  end
+
+  def can_remove_index_by_name?(options)
+    options.is_a?(Hash) && options.key?(:name) && options.except(:name, :algorithm, :if_exists).empty?
+  end
+
+  def add_column(table_name, column_name, type, if_not_exists: false, **options)
+    return if if_not_exists && column_exists?(table_name, column_name)
+    super(table_name, column_name, type, **options)
+  end
+
+  def remove_column(table_name, column_name, type = nil, if_exists: false, **options)
+    return if if_exists && !column_exists?(table_name, column_name)
+    super
   end
 
   def quote(*args)
@@ -182,7 +296,7 @@ module PostgreSQLAdapterExtensions
   def extension_installed?(extension)
     @extensions ||= {}
     @extensions.fetch(extension) do
-      select_value(<<-SQL)
+      select_value(<<~SQL)
         SELECT nspname
         FROM pg_extension
           INNER JOIN pg_namespace ON extnamespace=pg_namespace.oid
@@ -244,7 +358,12 @@ module PostgreSQLAdapterExtensions
   def change_column_null(table, column, nullness, default = nil)
     # no point in pre-warming the cache to avoid locking if we're already in a transaction
     return super if nullness != false || default || open_transactions != 0
-    execute("SELECT COUNT(*) FROM #{quote_table_name(table)} WHERE #{column} IS NULL")
+    transaction do
+      execute("SET LOCAL enable_indexscan=false")
+      execute("SET LOCAL enable_bitmapscan=false")
+      execute("SELECT COUNT(*) FROM #{quote_table_name(table)} WHERE #{column} IS NULL")
+      raise ActiveRecord::Rollback
+    end
     super
   end
 
@@ -277,6 +396,65 @@ module PostgreSQLAdapterExtensions
     ensure
       @nested_column_definitions = false
     end
+  end
+
+  def primary_keys(table_name)
+    # shamelessly copied from column_definitions
+    return super if ActiveRecord::Base.in_migration
+
+    # be wary of error reporting inside of MultiCache triggering a
+    # separate model access
+    return super if @nested_primary_keys
+    @nested_primary_keys = true
+    begin
+      got_inside = false
+      MultiCache.fetch(["primary_keys", table_name]) do
+        got_inside = true
+        super
+      end
+    rescue
+      raise if got_inside
+      # we never got inside, so something is wrong with the cache,
+      # just ignore it
+      super
+    ensure
+      @nested_primary_keys = false
+    end
+  end
+
+  def icu_collations
+    return [] if postgresql_version < 120000
+    @collations ||= select_rows <<~SQL, "SCHEMA"
+      SELECT nspname, collname
+      FROM pg_collation
+      INNER JOIN pg_namespace ON collnamespace=pg_namespace.oid
+      WHERE
+        collprovider='i' AND
+        NOT collisdeterministic AND
+        collcollate LIKE '%-u-kn-true'
+    SQL
+  end
+
+  def create_icu_collations
+    return if postgresql_version < 120000
+    original_locale = I18n.locale
+
+    collation = "und-u-kn-true"
+    unless icu_collations.find { |_schema, extant_collation| extant_collation == collation }
+      update("CREATE COLLATION public.#{quote_column_name(collation)} (LOCALE=#{quote(collation)}, PROVIDER='icu', DETERMINISTIC=false)")
+    end
+
+    I18n.available_locales.each do |locale|
+      next if locale =~ /-x-/
+      I18n.locale = locale
+      next if Canvas::ICU.collator.rules.empty?
+      collation = "#{locale}-u-kn-true"
+      next if icu_collations.find { |_schema, extant_collation| extant_collation == collation }
+      update("CREATE COLLATION public.#{quote_column_name(collation)} (LOCALE=#{quote(collation)}, PROVIDER='icu', DETERMINISTIC=false)")
+    end
+  ensure
+    @collations = nil
+    I18n.locale = original_locale
   end
 end
 

@@ -87,7 +87,6 @@ describe EportfolioEntriesController do
 
     context "spam eportfolios" do
       before(:once) do
-        @portfolio.user.account.enable_feature!(:eportfolio_moderation)
         @portfolio.update!(public: true)
         @category = eportfolio_category
         eportfolio_entry(@category)
@@ -116,15 +115,6 @@ describe EportfolioEntriesController do
 
           assert_unauthorized
         end
-
-        it "renders the entry when the eportfolio is spam and the release flag is disabled" do
-          @portfolio.user.account.disable_feature!(:eportfolio_moderation)
-          @portfolio.update!(spam_status: 'marked_as_spam')
-          user_session(@other_user)
-          get :show, params: { eportfolio_id: @portfolio.id, id: @entry.id }
-
-          expect(response.status).to eq(200)
-        end
       end
 
       context "when the user is an admin" do
@@ -149,18 +139,6 @@ describe EportfolioEntriesController do
 
           assert_unauthorized
         end
-
-        it "renders the entry when the eportfolio is spam and the admin does " \
-        "not have :moderate_user_content permissions and the release flag is disabled" do
-          @portfolio.user.account.disable_feature!(:eportfolio_moderation)
-          @portfolio.update!(spam_status: 'marked_as_spam')
-          Account.default.role_overrides.create!(role: admin_role, enabled: false, permission: :moderate_user_content)
-          user_session(@admin)
-          get :show, params: { eportfolio_id: @portfolio.id, id: @entry.id }
-
-          expect(response.status).to eq(200)
-        end
-
       end
     end
   end
@@ -246,10 +224,13 @@ describe EportfolioEntriesController do
   describe "GET 'submission'" do
     before(:once) do
       eportfolio_entry(@category)
+      @student = @user
       course = Course.create!
-      course.enroll_student(@user, enrollment_state: @active)
+      course.enroll_student(@student).accept(true)
+      teacher = teacher_in_course(course: course, active_all: true).user
       @assignment = course.assignments.create!
-      @submission = @assignment.submissions.find_by(user: @user)
+      @submission = @assignment.submissions.find_by(user: @student)
+      @assignment.grade_student(@student, grader: teacher, score: 5)
     end
 
     it 'requires authorization' do
@@ -258,7 +239,7 @@ describe EportfolioEntriesController do
     end
 
     it 'passes anonymize_students: false to the template if the assignment is not anonymous' do
-      user_session(@user)
+      user_session(@student)
       expect(controller).to receive(:render).with({
         template: 'submissions/show_preview',
         locals: { anonymize_students: false }
@@ -267,10 +248,10 @@ describe EportfolioEntriesController do
       get 'submission', params: { eportfolio_id: @portfolio.id, entry_id: @entry.id, submission_id: @submission.id }
     end
 
-    it 'passes anonymize_students: false to the template if the assignment is anonymous and unmuted' do
-      user_session(@user)
+    it 'passes anonymize_students: false to the template if the assignment is anonymous and grades are posted' do
+      user_session(@student)
       @assignment.update!(anonymous_grading: true)
-      @assignment.unmute!
+      @assignment.post_submissions
       expect(controller).to receive(:render).with({
         template: 'submissions/show_preview',
         locals: { anonymize_students: false }
@@ -279,9 +260,10 @@ describe EportfolioEntriesController do
       get 'submission', params: { eportfolio_id: @portfolio.id, entry_id: @entry.id, submission_id: @submission.id }
     end
 
-    it 'passes anonymize_students: true to the template if the assignment is anonymous and muted' do
-      user_session(@user)
-      @assignment.update!(anonymous_grading: true, muted: true)
+    it 'passes anonymize_students: true to the template if the assignment is anonymous and grades are unposted' do
+      user_session(@student)
+      @assignment.update!(anonymous_grading: true)
+      @assignment.hide_submissions
       expect(controller).to receive(:render).with({
         template: 'submissions/show_preview',
         locals: { anonymize_students: true }

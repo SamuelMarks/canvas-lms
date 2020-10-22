@@ -22,6 +22,18 @@ module InstFS
       Canvas::Plugin.find('inst_fs').enabled? && !!app_host && !!jwt_secret
     end
 
+    def check_migration_rate?
+      rand < Canvas::Plugin.find('inst_fs').settings[:migration_rate].to_f / 100.0
+    end
+
+    def service_worker_enabled?
+      Canvas::Plugin.value_to_boolean(Canvas::Plugin.find('inst_fs').settings[:service_worker])
+    end
+
+    def migrate_attachment?(attachment)
+      enabled? && !attachment.instfs_hosted? && Attachment.s3_storage? && check_migration_rate?
+    end
+
     def login_pixel(user, session, oauth_host)
       return if session[:oauth2] # don't stomp an existing oauth flow in progress
       return if session[:pending_otp]
@@ -39,11 +51,24 @@ module InstFS
       Canvas::Errors.capture_exception(:page_view, e)
     end
 
-    def authenticated_url(attachment, options={})
+    def bearer_token(options)
+      expires_in = options[:expires_in] || Setting.get('instfs.session_token.expiration_minutes', '5').to_i.minutes
+      claims = {
+        iat: Time.now.utc.to_i,
+        user_id: options[:user]&.global_id&.to_s
+      }
+      Canvas::Security.create_jwt(claims, expires_in.from_now, self.jwt_secret, :HS512)
+    end
 
+    def authenticated_url(attachment, options={})
       query_params = { token: access_jwt(access_path(attachment), options) }
       query_params[:download] = 1 if options[:download]
       access_url(attachment, query_params)
+    end
+
+    def authenticated_metadata_url(attachment, options={})
+      query_params = { token: access_jwt(metadata_path(attachment), options) }
+      metadata_url(attachment, query_params)
     end
 
     def logout_url(user)
@@ -149,6 +174,60 @@ module InstFS
       raise InstFS::DirectUploadError, "received code \"#{response.code}\" from service, with message \"#{response.body}\""
     end
 
+    def export_reference(attachment)
+      raise InstFS::ExportReferenceError, "attachment already has instfs_uuid" if attachment.instfs_hosted?
+      raise InstFS::ExportReferenceError, "can't export non-s3 attachments to inst-fs" unless Attachment.s3_storage?
+
+      # compare to s3_bucket_url in the aws-sdk-s3 gem's
+      # lib/aws-sdk-s3/customizations/bucket.rb; we're leaving out the bucket
+      # name from the url. otherwise, this is effectively
+      # `attachment.bucket.url`
+      s3_client = attachment.bucket.client
+      s3_url = s3_client.config.endpoint.dup
+      if s3_client.config.region == 'us-east-1' &&
+         s3_client.config.s3_us_east_1_regional_endpoint == 'legacy'
+        s3_url.host = Aws::S3::Plugins::IADRegionalEndpoint.legacy_host(s3_url.host)
+      end
+
+      body = {
+        objectStore: {
+          type: "s3",
+          params: {
+            host: s3_url.to_s,
+            bucket: attachment.bucket.name
+          }
+        },
+        # single reference
+        references: [{
+          storeKey: attachment.full_filename,
+          timestamp: attachment.created_at.to_i,
+          filename: attachment.filename,
+          displayName: attachment.display_name,
+          content_type: attachment.content_type,
+          encoding: attachment.encoding,
+          size: attachment.size,
+          user_id: attachment.context_user&.global_id&.to_s,
+          root_account_id: attachment.root_account&.global_id&.to_s,
+          sha512: nil, # to be calculated by inst-fs
+        }]
+      }.to_json
+
+      response = CanvasHttp.post(export_references_url, body: body, content_type: "application/json")
+      raise InstFS::ExportReferenceError, "received code \"#{response.code}\" from service, with message \"#{response.body}\"" unless response.class == Net::HTTPOK
+
+      json_response = JSON.parse(response.body)
+      well_formed =
+        json_response.is_a?(Hash) &&
+        json_response.key?("success") &&
+        json_response["success"].is_a?(Array) &&
+        json_response["success"].length == 1 &&
+        json_response["success"][0].is_a?(Hash)
+        json_response["success"][0].key?("id")
+      raise InstFS::ExportReferenceError, "import succeeded, but response body did not have expected shape" unless well_formed
+
+      json_response["success"][0]["id"]
+    end
+
     def duplicate_file(instfs_uuid)
       token = duplicate_file_jwt(instfs_uuid)
       url = "#{app_host}/files/#{instfs_uuid}/duplicate?token=#{token}"
@@ -176,10 +255,41 @@ module InstFS
 
     private
     def setting(key)
-      Canvas::DynamicSettings.find(service: "inst-fs", default_ttl: 5.minutes)[key]
+      unsafe_setting(key)
     rescue Imperium::TimeoutError => e
+      # capture this to make sure that we have SOME
+      # signal that the problem is continuing, even if our
+      # retries are all successful.
       Canvas::Errors.capture_exception(:inst_fs, e)
-      nil
+      Rails.logger.warn("[INST_FS] Consul timeout hit during settings #{e}, entering retry handling...")
+      retry_limit = Setting.get("inst_fs_config_retry_count", "5").to_i
+      retry_base = Setting.get("inst_fs_config_retry_base_interval", "1.4").to_i
+      retry_count = 1
+      return_value = nil
+      currently_in_job = Delayed::Worker.current_job.present?
+      while retry_count <= retry_limit
+        begin
+          return_value = unsafe_setting(key)
+          break
+        rescue Imperium::TimeoutError => e
+          retry_count += 1
+          # if we're not currently in a job, one retry is all you get,
+          # fail for the user and move on.
+          raise e if !currently_in_job || retry_count > retry_limit
+          backoff_interval = retry_base ** retry_count
+          Rails.logger.warn("[INST_FS] Consul timeout hit during settings, retrying in #{backoff_interval} seconds...")
+          sleep(backoff_interval)
+        end
+      end
+      return_value
+    end
+
+    # this is just to provide a convenient way to wrap
+    # accessing a setting in retries (see #setting),
+    # it should not be used by the rest of the code,
+    # inside this class or otherwise.
+    def unsafe_setting(key)
+      Canvas::DynamicSettings.find(service: "inst-fs", default_ttl: 5.minutes)[key]
     end
 
     def service_url(path, query_params=nil)
@@ -194,6 +304,10 @@ module InstFS
 
     def access_url(attachment, query_params)
       service_url(access_path(attachment), query_params)
+    end
+
+    def metadata_url(attachment, query_params)
+      service_url(metadata_path(attachment), query_params)
     end
 
     def thumbnail_url(attachment, query_params)
@@ -214,6 +328,10 @@ module InstFS
         res += "/#{encoded_display_name}"
       end
       res
+    end
+
+    def metadata_path(attachment)
+      "/files/#{attachment.instfs_uuid}/metadata"
     end
 
     def thumbnail_path(attachment)
@@ -375,6 +493,7 @@ module InstFS
   end
 
   class DirectUploadError < StandardError; end
+  class ExportReferenceError < StandardError; end
   class DuplicationError < StandardError; end
   class DeletionError < StandardError; end
 end

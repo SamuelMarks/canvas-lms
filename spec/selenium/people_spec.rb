@@ -274,6 +274,21 @@ describe "people" do
       expect(f('.groups-with-count')).to include_text("Groups (#{group_count})")
     end
 
+    it "should auto-create groups based on # of students" do
+      enroll_more_students
+      get "/courses/#{@course.id}/groups#new"
+      f("#new_category_name").send_keys("Groups of 2")
+      f("input#num_students").click
+      count_input = f("input[name='create_group_member_count']")
+      count_input.clear
+      count_input.send_keys 2
+      fj("button:contains('Save')").click
+      wait_for_ajax_requests # initiates job request
+      run_jobs
+      wait_for_ajaximations # finishes calculations and repopulates list
+      expect(ff("li.group").size).to eq 3
+    end
+
     it "should edit a student group" do
       get "/courses/#{@course.id}/users"
       new_group_name = "new group edit name"
@@ -288,17 +303,13 @@ describe "people" do
     end
 
     it "should delete a student group" do
-      get "/courses/#{@course.id}/users"
-      create_student_group
+      group_category = GroupCategory.create(:name => "new student group", :context => @course)
+
+      get "/courses/#{@course.id}/groups#tab-#{group_category.id}"
       fj('.group-category-actions:visible a:visible').click
       f('.delete-category').click
-      keep_trying_until do
-        expect(driver.switch_to.alert).not_to be_nil
-        driver.switch_to.alert.accept
-        true
-      end
+      accept_alert
       wait_for_ajaximations
-      refresh_page
       expect(f('.empty-groupset-instructions')).to be_displayed
     end
 
@@ -792,7 +803,6 @@ describe "people" do
 
     context "student tray" do
       before :once do
-        preload_graphql_schema
         @account = Account.default
         @account.enable_feature!(:student_context_cards)
         @student = create_user('student@test.com')

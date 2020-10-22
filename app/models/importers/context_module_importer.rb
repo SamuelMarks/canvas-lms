@@ -116,6 +116,12 @@ module Importers
       migration.add_imported_item(item)
       item.name = hash[:title] || hash[:description]
       item.mark_as_importing!(migration)
+
+      if item.deleted? && migration.for_master_course_import? &&
+          migration.master_course_subscription.content_tag_for(item)&.downstream_changes&.include?("manually_deleted")
+        return # it's been deleted downstream, just leave it (and any imported items) alone and return
+      end
+
       if hash[:workflow_state] == 'unpublished'
         item.workflow_state = 'unpublished' if item.new_record? || item.deleted? || migration.for_master_course_import? # otherwise leave it alone
       else
@@ -134,7 +140,7 @@ module Importers
       end
 
       item.require_sequential_progress = hash[:require_sequential_progress] if hash.has_key?(:require_sequential_progress)
-      item.requirement_count = hash[:requirement_count] if hash[:requirement_count]
+      item.requirement_count = hash[:requirement_count] if hash.has_key?(:requirement_count)
 
       if hash[:prerequisites]
         preqs = []
@@ -150,8 +156,7 @@ module Importers
       item.save!
 
       item_map = {}
-      item.item_migration_position ||= item.content_tags.not_deleted.pluck(:position).compact.max
-
+      item.item_migration_position ||= (item.content_tags.not_deleted.pluck(:position).compact + [item.content_tags.not_deleted.count]).max
       items = hash[:items] || []
       items = items.map{|item| self.flatten_item(item, 0)}.flatten
 
@@ -181,7 +186,7 @@ module Importers
             c_reqs << req
           end
         end
-        if c_reqs.length > 0
+        if c_reqs.length > 0 || migration.for_master_course_import? # allow clearing requirements on sync
           item.completion_requirements = c_reqs
           item.save
         end

@@ -20,7 +20,7 @@ class NotificationPolicy < ActiveRecord::Base
 
   include NotificationPreloader
   belongs_to :communication_channel
-  has_many :delayed_messages, :dependent => :destroy
+  has_many :delayed_messages, inverse_of: :notification_policy, :dependent => :destroy
 
   validates_presence_of :communication_channel_id, :frequency
   validates_inclusion_of :frequency, in: [Notification::FREQ_IMMEDIATELY,
@@ -43,9 +43,7 @@ class NotificationPolicy < ActiveRecord::Base
     end
   }
 
-  # TODO: the scope name should be self-explanatory... change this to
-  # by_frequency or something This is for choosing a policy by frequency
-  scope :by, lambda { |freq| where(:frequency => Array(freq).map(&:to_s)) }
+  scope :by_frequency, lambda { |freq| where(:frequency => Array(freq).map(&:to_s)) }
 
   scope :in_state, lambda { |state| where(:workflow_state => state.to_s) }
 
@@ -59,13 +57,13 @@ class NotificationPolicy < ActiveRecord::Base
         bool_val = (value == 'true')
         # save the preference as a symbol (convert from string)
         case key.to_sym
-          when :send_scores_in_emails, :send_observed_names_in_notifications
+          when :send_scores_in_emails
             # Only set if a root account and the root account allows the setting.
             if params[:root_account].settings[:allow_sending_scores_in_emails] != false
               user.preferences[key.to_sym] = bool_val
             end
-          when :no_submission_comments_inbox
-            user.preferences[:no_submission_comments_inbox] = bool_val
+          when :no_submission_comments_inbox, :send_observed_names_in_notifications
+            user.preferences[key.to_sym] = bool_val
         end
       end
       user.save!
@@ -77,8 +75,8 @@ class NotificationPolicy < ActiveRecord::Base
       frequency = params[:frequency]
       cc = user.communication_channels.find(params[:channel_id])
 
-      # Find any existing NotificationPolicies for the category and the channel. If frequency is 'never', delete the
-      # entry. If other than that, create or update the entry.
+      # Find any existing NotificationPolicies for the category and the channel.
+      # create or update the entry.
       NotificationPolicy.transaction do
         notifications.each do |notification_id|
           scope = user.notification_policies.
@@ -156,7 +154,7 @@ class NotificationPolicy < ActiveRecord::Base
   end
 
   # frequencies is an optional hash; key is notification_name (underscore)
-  def self.find_all_for(communication_channel, frequencies = {})
+  def self.find_all_for(communication_channel, frequencies = {}, context_type: nil)
     frequencies = Hash[frequencies.map { |name, frequency| [BroadcastPolicy.notification_finder.by_name(name.titleize), frequency] }]
     communication_channel.shard.activate do
       policies = communication_channel.notification_policies.to_a
@@ -189,6 +187,7 @@ class NotificationPolicy < ActiveRecord::Base
         np ||= communication_channel.notification_policies.where(notification_id: notification).first
         policies << np
       end
+      policies = policies.select { |np| np.notification&.is_course_type? } if context_type == 'Course'
       policies
     end
   end

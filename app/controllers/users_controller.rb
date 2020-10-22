@@ -353,53 +353,6 @@ class UsersController < ApplicationController
     end
   end
 
-  def index
-    get_context
-    if @context.feature_enabled?(:course_user_search) && !params.key?(:term)
-      @account ||= @context
-      return course_user_search
-    end
-
-    return unless authorized_action(@context, @current_user, :read_roster)
-    @root_account = @context.root_account
-    @query = (params[:user] && params[:user][:name]) || params[:term]
-    js_env :ACCOUNT => account_json(@domain_root_account, nil, session, ['registration_settings'])
-    Shackles.activate(:slave) do
-      if @context && @context.is_a?(Account) && @query
-        @users = @context.users_name_like(@query)
-      elsif params[:enrollment_term_id].present? && @root_account == @context
-        @users = @context.fast_all_users.
-            where("EXISTS (?)", Enrollment.where("enrollments.user_id=users.id").
-              joins(:course).
-              where(Enrollment::QueryBuilder.new(:active).conditions).
-              where(courses: { enrollment_term_id: params[:enrollment_term_id]}))
-      else
-        @users = @context.fast_all_users
-      end
-
-      @users = @users.paginate(:page => params[:page])
-
-      respond_to do |format|
-        if @users.length == 1 && params[:term]
-          format.html {
-            redirect_to(named_context_url(@context, :context_user_url, @users.first))
-          }
-        else
-          @enrollment_terms = []
-          if @root_account == @context
-            @enrollment_terms = @context.enrollment_terms.active
-          end
-          format.html
-        end
-        format.json {
-          cancel_cache_buster
-          expires_in 30.minutes
-          render(:json => @users.map { |u| { :label => u.name, :id => u.id } })
-        }
-      end
-    end
-  end
-
   # @API List users in account
   # A paginated list of of users associated with this account.
   #
@@ -446,14 +399,17 @@ class UsersController < ApplicationController
       users = UserSearch.scope_for(@context, @current_user,
         {order: params[:order], sort: params[:sort], enrollment_role_id: params[:role_filter_id],
           enrollment_type: params[:enrollment_type]})
+      users = users.with_last_login if params[:sort] == 'last_login'
     end
 
     includes = (params[:include] || []) & %w{avatar_url email last_login time_zone uuid}
     includes << 'last_login' if params[:sort] == 'last_login' && !includes.include?('last_login')
-    users = users.with_last_login if includes.include?('last_login') && !search_term
-    users = Api.paginate(users, self, api_v1_account_users_url, page_opts)
-    user_json_preloads(users, includes.include?('email'))
-    render :json => users.map { |u| user_json(u, @current_user, session, includes)}
+    GuardRail.activate(:secondary) do
+      users = Api.paginate(users, self, api_v1_account_users_url, page_opts)
+      user_json_preloads(users, includes.include?('email'))
+      User.preload_last_login(users, @context.resolved_root_account_id) if includes.include?('last_login') && !(params[:sort] == 'last_login')
+      render :json => users.map { |u| user_json(u, @current_user, session, includes)}
+    end
   end
 
 
@@ -531,7 +487,8 @@ class UsersController < ApplicationController
       },
       :STUDENT_PLANNER_ENABLED => planner_enabled?,
       :STUDENT_PLANNER_COURSES => planner_enabled? && map_courses_for_menu(@current_user.courses_with_primary_enrollment),
-      :STUDENT_PLANNER_GROUPS => planner_enabled? && map_groups_for_planner(@current_user.current_groups)
+      :STUDENT_PLANNER_GROUPS => planner_enabled? && map_groups_for_planner(@current_user.current_groups),
+      :PAST_ANNOUNCEMENTS_ENABLED => @domain_root_account.feature_enabled?('past_announcements')
     })
 
     @announcements = AccountNotification.for_user_and_account(@current_user, @domain_root_account)
@@ -562,7 +519,13 @@ class UsersController < ApplicationController
 
   def dashboard_cards
     dashboard_courses = map_courses_for_menu(@current_user.menu_courses, tabs: DASHBOARD_CARD_TABS)
-    Rails.cache.write(['last_known_dashboard_cards_count', @current_user.global_id].cache_key, dashboard_courses.count)
+    if @domain_root_account.feature_enabled?(:unpublished_courses)
+      published, unpublished = dashboard_courses.partition { |course| course[:published]}
+      Rails.cache.write(['last_known_dashboard_cards_published_count', @current_user.global_id].cache_key, published.count)
+      Rails.cache.write(['last_known_dashboard_cards_unpublished_count', @current_user.global_id].cache_key, unpublished.count)
+    else
+      Rails.cache.write(['last_known_dashboard_cards_count', @current_user.global_id].cache_key, dashboard_courses.count)
+    end
     render json: dashboard_courses
   end
 
@@ -597,8 +560,11 @@ class UsersController < ApplicationController
   end
 
   def dashboard_sidebar
-    Shackles.activate(:slave) do
-      prepare_current_user_dashboard_items
+    GuardRail.activate(:secondary) do
+      unless @current_user&.has_student_enrollment? && !@current_user.non_student_enrollment?
+        # it's not even using any of this for students - it's just using planner now
+        prepare_current_user_dashboard_items
+      end
 
       if (@show_recent_feedback = @current_user.student_enrollments.active.exists?)
         @recent_feedback = (@current_user && @current_user.recent_feedback) || []
@@ -784,21 +750,25 @@ class UsersController < ApplicationController
 
     # include concluded enrollments as well as active ones if requested
     include_concluded = params[:include].try(:include?, 'concluded')
-    limit = 500
+    limit = 100
     @query = params[:course].try(:[], :name) || params[:term]
     @courses = []
     Shard.with_each_shard(@context.in_region_associated_shards) do
       scope = @query.present? ?
-        @context.manageable_courses_name_like(@query, include_concluded) :
+        @context.manageable_courses_by_query(@query, include_concluded) :
         @context.manageable_courses(include_concluded).limit(limit)
       @courses += scope.select("courses.*,#{Course.best_unicode_collation_key('name')} AS sort_key").order('sort_key').preload(:enrollment_term).to_a
     end
     @courses = @courses.sort_by(&:sort_key)[0, limit]
 
-    cancel_cache_buster
-    expires_in 30.minutes
+    @courses = @courses.select { |c| c.grants_right?(@current_user, :read_as_admin) && c.grants_right?(@current_user, :read) }
+
     render :json => @courses.map { |c|
-      { :label => c.name, :id => c.id, :term => c.enrollment_term.name,
+      { :label => c.name,
+        :id => c.id,
+        :course_code => c.course_code,
+        :sis_id => c.sis_source_id,
+        :term => c.enrollment_term.name,
         :enrollment_start => c.enrollment_term.start_at,
         :account_name => c.enrollment_term.root_account.name,
         :account_id => c.enrollment_term.root_account.id,
@@ -858,53 +828,53 @@ class UsersController < ApplicationController
   #     },
   #   ]
   def todo_items
-    return render_unauthorized_action unless @current_user
+    GuardRail.activate(:secondary) do
+      return render_unauthorized_action unless @current_user
+      bookmark = Plannable::Bookmarker.new(Assignment, false, [:due_at, :created_at], :id)
+      grading_scope = @current_user.assignments_needing_grading(scope_only: true).
+        reorder(:due_at, :id).preload(:external_tool_tag, :rubric_association, :rubric, :discussion_topic, :quiz, :duplicate_of)
+      submitting_scope = @current_user.
+        assignments_needing_submitting(
+          include_ungraded: true,
+          scope_only: true).
+        reorder(:due_at, :id).preload(:external_tool_tag, :rubric_association, :rubric, :discussion_topic, :quiz).eager_load(:duplicate_of)
 
-    bookmark = Plannable::Bookmarker.new(Assignment, false, [:due_at, :created_at], :id)
-    grading_scope = @current_user.assignments_needing_grading(scope_only: true).
-      reorder(:due_at, :id).preload(:external_tool_tag, :rubric_association, :rubric, :discussion_topic, :quiz, :duplicate_of)
-    submitting_scope = @current_user.
-      assignments_needing_submitting(
-        include_ungraded: true,
-        scope_only: true).
-      reorder(:due_at, :id).preload(:external_tool_tag, :rubric_association, :rubric, :discussion_topic, :quiz).eager_load(:duplicate_of)
-
-    grading_collection = BookmarkedCollection.wrap(bookmark, grading_scope)
-    grading_collection = BookmarkedCollection.filter(grading_collection) do |assignment|
-      assignment.context.grants_right?(@current_user, session, :manage_grades)
-    end
-    grading_collection = BookmarkedCollection.transform(grading_collection) do |a|
-      todo_item_json(a, @current_user, session, 'grading')
-    end
-    submitting_collection = BookmarkedCollection.wrap(bookmark, submitting_scope)
-    submitting_collection = BookmarkedCollection.transform(submitting_collection) do |a|
-      todo_item_json(a, @current_user, session, 'submitting')
-    end
-    collections = [
-      ['grading', grading_collection],
-      ['submitting', submitting_collection]
-    ]
-
-    if Array(params[:include]).include? 'ungraded_quizzes'
-      quizzes_bookmark = Plannable::Bookmarker.new(Quizzes::Quiz, false, [:due_at, :created_at], :id)
-      quizzes_scope = @current_user.
-        ungraded_quizzes(
-          :needing_submitting => true,
-          :scope_only => true
-        ).
-        reorder(:due_at, :id)
-      quizzes_collection = BookmarkedCollection.wrap(quizzes_bookmark, quizzes_scope)
-      quizzes_collection = BookmarkedCollection.transform(quizzes_collection) do |a|
+      grading_collection = BookmarkedCollection.wrap(bookmark, grading_scope)
+      grading_collection = BookmarkedCollection.filter(grading_collection) do |assignment|
+        assignment.context.grants_right?(@current_user, session, :manage_grades)
+      end
+      grading_collection = BookmarkedCollection.transform(grading_collection) do |a|
+        todo_item_json(a, @current_user, session, 'grading')
+      end
+      submitting_collection = BookmarkedCollection.wrap(bookmark, submitting_scope)
+      submitting_collection = BookmarkedCollection.transform(submitting_collection) do |a|
         todo_item_json(a, @current_user, session, 'submitting')
       end
+      collections = [
+        ['grading', grading_collection],
+        ['submitting', submitting_collection]
+      ]
 
-      collections << ['quizzes', quizzes_collection]
+      if Array(params[:include]).include? 'ungraded_quizzes'
+        quizzes_bookmark = Plannable::Bookmarker.new(Quizzes::Quiz, false, [:due_at, :created_at], :id)
+        quizzes_scope = @current_user.
+          ungraded_quizzes(
+            :needing_submitting => true,
+            :scope_only => true
+          ).
+          reorder(:due_at, :id)
+        quizzes_collection = BookmarkedCollection.wrap(quizzes_bookmark, quizzes_scope)
+        quizzes_collection = BookmarkedCollection.transform(quizzes_collection) do |a|
+          todo_item_json(a, @current_user, session, 'submitting')
+        end
+
+        collections << ['quizzes', quizzes_collection]
+      end
+
+      paginated_collection = BookmarkedCollection.merge(*collections)
+      todos = Api.paginate(paginated_collection, self, api_v1_user_todo_list_items_url)
+      render :json => todos
     end
-
-    paginated_collection = BookmarkedCollection.merge(*collections)
-    todos = Api.paginate(paginated_collection, self, api_v1_user_todo_list_items_url)
-
-    render :json => todos
   end
 
   # @API List counts for todo items
@@ -924,13 +894,15 @@ class UsersController < ApplicationController
   #     assignments_needing_submitting: 10
   #   }
   def todo_item_count
-    return render_unauthorized_action unless @current_user
-    grading = @current_user.submissions_needing_grading_count
-    submitting = @current_user.assignments_needing_submitting(include_ungraded: true, scope_only: true, limit: nil).size
-    if Array(params[:include]).include? 'ungraded_quizzes'
-      submitting += @current_user.ungraded_quizzes(:needing_submitting => true, scope_only: true, limit: nil).size
+    GuardRail.activate(:secondary) do
+      return render_unauthorized_action unless @current_user
+      grading = @current_user.submissions_needing_grading_count
+      submitting = @current_user.assignments_needing_submitting(include_ungraded: true, scope_only: true, limit: nil).size
+      if Array(params[:include]).include? 'ungraded_quizzes'
+        submitting += @current_user.ungraded_quizzes(:needing_submitting => true, scope_only: true, limit: nil).size
+      end
+      render json: {needs_grading_count: grading, assignments_needing_submitting: submitting}
     end
-    render json: {needs_grading_count: grading, assignments_needing_submitting: submitting}
   end
 
   include Api::V1::Assignment
@@ -992,10 +964,6 @@ class UsersController < ApplicationController
   #         "unlock_at"=>nil,
   #         "course_id"=>12942,
   #         "submission_types"=>["none"],
-  #         // [DEPRECATED] This property is deprecated, effective 2020-06-03 (notice given 2020-02-26):
-  #         // Use hidden_submissions_count to determine whether an assignment has feedback
-  #         // that has not been posted to students.
-  #         "muted"=>false,
   #         "needs_grading_count"=>0,
   #         "html_url"=>"http://www.example.com/courses/12942/assignments/9729"
   #       },
@@ -1006,7 +974,7 @@ class UsersController < ApplicationController
   def upcoming_events
     return render_unauthorized_action unless @current_user
 
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       prepare_current_user_dashboard_items
 
       events = @upcoming_events.map do |e|
@@ -1034,7 +1002,7 @@ class UsersController < ApplicationController
   #
   # @returns [Assignment]
   def missing_submissions
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       user = api_find(User, params[:user_id])
       return render_unauthorized_action unless @current_user && user.grants_right?(@current_user, :read)
 
@@ -1199,7 +1167,7 @@ class UsersController < ApplicationController
   end
 
   def show
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       get_context
       @context_account = @context.is_a?(Account) ? @context : @domain_root_account
       @user = params[:id] && params[:id] != 'self' ? User.find(params[:id]) : @current_user
@@ -1229,6 +1197,7 @@ class UsersController < ApplicationController
         respond_to do |format|
           format.html do
             @google_analytics_page_title = "User"
+            @body_classes << 'full-width'
             js_env(CONTEXT_USER_DISPLAY_NAME: @user.short_name,
                    USER_ID: @user.id)
           end
@@ -1254,7 +1223,7 @@ class UsersController < ApplicationController
   #    "limit_parent_app_web_access": false // Whether the user can interact with Canvas web from the Canvas Parent app.
   #   }
   #
-  # @argument include[] [String, "uuid"]
+  # @argument include[] [String, "uuid", "last_login"]
   #   Array of additional information to include on the user record.
   #   "locale", "avatar_url", "permissions", "email", and "effective_locale"
   #   will always be returned
@@ -1269,7 +1238,14 @@ class UsersController < ApplicationController
     @user = api_find(User, params[:id])
     if @user.grants_right?(@current_user, session, :api_show_user)
       includes = %w{locale avatar_url permissions email effective_locale}
-      includes << 'uuid' if Array.wrap(params[:include]).include?('uuid')
+      includes += Array.wrap(params[:include]) & ['uuid', 'last_login']
+
+      # would've preferred to pass User.with_last_login as the collection to
+      # api_find but the implementation of that scope appears to be incompatible
+      # with what api_find does
+      if includes.include?('last_login')
+        @user.last_login = User.with_last_login.find(@user.id).read_attribute(:last_login)
+      end
 
       render :json => user_json(@user, @current_user, session, includes, @domain_root_account)
     else
@@ -1327,6 +1303,7 @@ class UsersController < ApplicationController
   def new
     return redirect_to(root_url) if @current_user
     run_login_hooks
+    @include_recaptcha = recaptcha_enabled?
     js_env :ACCOUNT => account_json(@domain_root_account, nil, session, ['registration_settings']),
            :PASSWORD_POLICY => @domain_root_account.password_policy
     render :layout => 'bare'
@@ -1339,10 +1316,10 @@ class UsersController < ApplicationController
   # @API Create a user
   # Create and return a new user and pseudonym for an account.
   #
-  # If you don't have the "Modify login details for users" permission, but
-  # self-registration is enabled on the account, you can still use this
-  # endpoint to register new users. Certain fields will be required, and
-  # others will be ignored (see below).
+  # [DEPRECATED (for self-registration only)] If you don't have the "Modify
+  # login details for users" permission, but self-registration is enabled
+  # on the account, you can still use this endpoint to register new users.
+  # Certain fields will be required, and others will be ignored (see below).
   #
   # @argument user[name] [String]
   #   The full name of the user. This name will be used by teacher for grading.
@@ -1362,9 +1339,6 @@ class UsersController < ApplicationController
   # @argument user[locale] [String]
   #   The user's preferred language, from the list of languages Canvas supports.
   #   This is in RFC-5646 format.
-  #
-  # @argument user[birthdate] [Date]
-  #   The user's birth date.
   #
   # @argument user[terms_of_use] [Boolean]
   #   Whether the user accepts the terms of use. Required if this is a
@@ -1461,12 +1435,20 @@ class UsersController < ApplicationController
   #   match the domain this request is directed to, and be for a well-formed path that Canvas
   #   can recognize.
   #
+  # @argument initial_enrollment_type [String]
+  #   `observer` if doing a self-registration with a pairing code. This allows setting the
+  #   password during user creation.
+  #
+  # @argument pairing_code[code] [String]
+  #   If provided and valid, will link the new user as an observer to the student's whose
+  #   pairing code is given.
+  #
   # @returns User
   def create
     create_user
   end
 
-  # @API Self register a user
+  # @API [DEPRECATED] Self register a user
   # Self register and return a new user and pseudonym for an account.
   #
   # If self-registration is enabled on the account, you can use this
@@ -1490,9 +1472,6 @@ class UsersController < ApplicationController
   # @argument user[locale] [String]
   #   The user's preferred language, from the list of languages Canvas supports.
   #   This is in RFC-5646 format.
-  #
-  # @argument user[birthdate] [Date]
-  #   The user's birth date.
   #
   # @argument user[terms_of_use] [Required, Boolean]
   #   Whether the user accepts the terms of use.
@@ -1582,7 +1561,9 @@ class UsersController < ApplicationController
       return render(json: { :message => "Invalid Page Name Provided" }, status: :bad_request)
     end
 
-    user.new_user_tutorial_statuses[params[:page_name]] = value_to_boolean(params[:collapsed])
+    statuses = user.new_user_tutorial_statuses
+    statuses[params[:page_name]] = value_to_boolean(params[:collapsed])
+    user.set_preference(:new_user_tutorial_statuses, statuses)
 
     respond_to do |format|
       format.json do
@@ -1691,15 +1672,16 @@ class UsersController < ApplicationController
     end
 
     user.shard.activate do
+      colors = user.custom_colors
       # translate asset string to be relative to user's shard
       unless params[:hexcode].nil?
-        user.custom_colors[context.asset_string] = normalize_hexcode(params[:hexcode])
+        colors[context.asset_string] = normalize_hexcode(params[:hexcode])
       end
 
       respond_to do |format|
         format.json do
-          if user.save
-            render(json: { hexcode: user.custom_colors[context.asset_string]})
+          if user.set_preference(:custom_colors, colors)
+            render(json: { hexcode: colors[context.asset_string]})
           else
             render(json: user.errors, status: :bad_request)
           end
@@ -1709,7 +1691,6 @@ class UsersController < ApplicationController
   end
 
   # @API Get dashboard positions
-  # @beta
   #
   # Returns all dashboard positions that have been saved for a user.
   #
@@ -1734,7 +1715,6 @@ class UsersController < ApplicationController
   end
 
   # @API Update dashboard positions
-  # @beta
   #
   # Updates the dashboard positions for a user for a given context.  This allows
   # positions for the dashboard cards and elsewhere to be customized on a per
@@ -1773,10 +1753,13 @@ class UsersController < ApplicationController
       position = Integer(val) rescue nil
       if position.nil?
         return render(json: { :message => "Invalid position provided" }, status: :bad_request)
+      elsif position.abs > 1_000
+        # validate that the value used is less than unreasonable, but without any real effort
+        return render(json: { message: "Position #{position} is too high. Your dashboard cards can probably be sorted with numbers 1-5, you could even use a 0." }, status: :bad_request)
       end
     end
 
-    user.dashboard_positions = user.dashboard_positions.merge(params[:dashboard_positions].to_unsafe_h)
+    user.set_dashboard_positions(user.dashboard_positions.merge(params[:dashboard_positions].to_unsafe_h))
 
     respond_to do |format|
       format.json do
@@ -1855,9 +1838,12 @@ class UsersController < ApplicationController
 
     update_email = @user.grants_right?(@current_user, :manage_user_details) && user_params[:email]
     managed_attributes = []
-    managed_attributes.concat [:name, :short_name, :sortable_name, :birthdate] if @user.grants_right?(@current_user, :rename)
+    managed_attributes.concat [:name, :short_name, :sortable_name] if @user.grants_right?(@current_user, :rename)
     managed_attributes << :terms_of_use if @user == (@real_current_user || @current_user)
     managed_attributes << :email if update_email
+
+    # we dropped birthdate from user but this will allow backwards compatability and prevent errors
+    user_params.delete("birthdate")
 
     if @domain_root_account.enable_profiles?
       managed_attributes << :bio if @user.grants_right?(@current_user, :manage_user_details)
@@ -1914,12 +1900,6 @@ class UsersController < ApplicationController
         @user.require_acceptance_of_terms = true
       end
 
-      if user_params[:birthdate].present? && user_params[:birthdate] !~ Api::ISO8601_REGEX &&
-          params[:user][:birthdate] !~ Api::DATE_REGEX
-        return render(:json => {:errors => {:birthdate => t(:birthdate_invalid,
-          'Invalid date or invalid datetime for birthdate')}}, :status => 400)
-      end
-
       @user.sortable_name_explicitly_set = user_params[:sortable_name].present?
 
       respond_to do |format|
@@ -1937,9 +1917,7 @@ class UsersController < ApplicationController
             return redirect_back fallback_location: user_url(@user)
           end
           format.html { redirect_to user_url(@user) }
-          format.json {
-            render :json => user_json(@user, @current_user, session, includes,
-              @current_user.pseudonym.account) }
+          format.json { render :json => user_json(@user, @current_user, session, includes, @domain_root_account) }
         else
           format.html { render :edit }
           format.json { render :json => @user.errors, :status => :bad_request }
@@ -2464,9 +2442,11 @@ class UsersController < ApplicationController
   #          -H 'Authorization: Bearer <token>'
   #
   # @argument include[] [String, "assignment"]
-  #   Associations to include with the group.
+  #   Associations to include with the group
   # @argument only_current_enrollments [boolean]
   #   Returns submissions for only currently active enrollments
+  # @argument only_published_assignments [boolean]
+  #   Returns submissions for only published assignments
   #
   # @returns [Submission]
   #
@@ -2475,6 +2455,7 @@ class UsersController < ApplicationController
     if authorized_action(@user, @current_user, :read_grades)
       collections = []
       only_current_enrollments = value_to_boolean(params[:only_current_enrollments])
+      only_published_assignments = value_to_boolean(params[:only_published_assignments])
 
       # Plannable Bookmarker enables descending order
       bookmarker = Plannable::Bookmarker.new(Submission, true, :graded_at, :id)
@@ -2484,7 +2465,11 @@ class UsersController < ApplicationController
         else
           Submission.all
         end
-        collections << [Shard.current.id, BookmarkedCollection.wrap(bookmarker, submissions.for_user(@user).graded)]
+        if only_published_assignments
+          submissions = submissions.joins(:assignment).merge(Assignment.published)
+        end
+        submissions = submissions.for_user(@user).graded
+        collections << [Shard.current.id, BookmarkedCollection.wrap(bookmarker, submissions)]
       end
 
       scope = BookmarkedCollection.merge(*collections)
@@ -2498,8 +2483,7 @@ class UsersController < ApplicationController
   def clear_cache
     user = api_find(User, params[:id])
     if user && authorized_action(@domain_root_account, @current_user, :manage_site_settings)
-      user.clear_cache_key(*Canvas::CacheRegister::ALLOWED_TYPES['User'])
-      user.touch
+      user.clear_caches
       render json: { status: "ok" }
     end
   end
@@ -2530,7 +2514,7 @@ class UsersController < ApplicationController
     # find all ungraded submissions in one query
     ungraded_submissions = course.submissions.
         where.not(:assignments => {:workflow_state => 'deleted'}).
-        preload(:assignment).
+        eager_load(:assignment).
         where("user_id IN (?) AND #{Submission.needs_grading_conditions}", ids).
         except(:order).
         order(:submitted_at).to_a
@@ -2597,9 +2581,7 @@ class UsersController < ApplicationController
       student_enrollments: {},
       observed_enrollments: {}
     }
-    grouped_observed_enrollments =
-      presenter.observed_enrollments.group_by { |enrollment| enrollment[:course_id] }
-
+    grouped_observed_enrollments = presenter.observed_enrollments.group_by(&:course_id)
     grouped_observed_enrollments.each do |course_id, enrollments|
       grading_period_id = generate_grading_period_id(
         grading_periods.dig(course_id, :selected_period_id)
@@ -2753,18 +2735,13 @@ class UsersController < ApplicationController
 
     if params[:user]
       user_params = params[:user].
-        permit(:name, :short_name, :sortable_name, :time_zone, :show_user_services, :gender,
-          :avatar_image, :subscribe_to_emails, :locale, :bio, :birthdate, :terms_of_use,
+        permit(:name, :short_name, :sortable_name, :time_zone, :show_user_services,
+          :avatar_image, :subscribe_to_emails, :locale, :bio, :terms_of_use,
           :self_enrollment_code, :initial_enrollment_type)
       if self_enrollment && user_params[:self_enrollment_code]
         user_params[:self_enrollment_code].strip!
       else
         user_params.delete(:self_enrollment_code)
-      end
-      if user_params[:birthdate].present? && user_params[:birthdate] !~ Api::ISO8601_REGEX &&
-          user_params[:birthdate] !~ Api::DATE_REGEX
-        return render(:json => {:errors => {:birthdate => t(:birthdate_invalid,
-                                                            'Invalid date or invalid datetime for birthdate')}}, :status => 400)
       end
 
       @user.attributes = user_params
@@ -2785,19 +2762,24 @@ class UsersController < ApplicationController
                                'pre_registered'
                              end
     end
+    @recaptcha_errors = nil
     if force_validations || !manage_user_logins
       @user.require_acceptance_of_terms = @domain_root_account.terms_required?
       @user.require_presence_of_name = true
       @user.require_self_enrollment_code = self_enrollment
       @user.validation_root_account = @domain_root_account
+      @recaptcha_errors = validate_recaptcha(params['g-recaptcha-response'])
     end
 
     @invalid_observee_creds = nil
     @invalid_observee_code = nil
     if @user.initial_enrollment_type == 'observer'
-      @pairing_code = ObserverPairingCode.active.where(code: params[:pairing_code][:code]).first
+      @pairing_code = find_observer_pairing_code(params[:pairing_code][:code])
       if !@pairing_code.nil?
         @observee = @pairing_code.user
+        # If the user is using a valid pairing code, we don't need recaptcha
+        # Just clear out any errors it may have generated
+        @recaptcha_errors = nil
       else
         @invalid_observee_code = ObserverPairingCode.new
         @invalid_observee_code.errors.add('code', 'invalid')
@@ -2843,7 +2825,7 @@ class UsersController < ApplicationController
       @cc.workflow_state = skip_confirmation ? 'active' : 'unconfirmed' unless @cc.workflow_state == 'confirmed'
     end
 
-    if @user.valid? && @pseudonym.valid? && @invalid_observee_creds.nil? & @invalid_observee_code.nil?
+    if @recaptcha_errors.nil? && @user.valid? && @pseudonym.valid? && @invalid_observee_creds.nil? & @invalid_observee_code.nil?
       # saving the user takes care of the @pseudonym and @cc, so we can't call
       # save_without_session_maintenance directly. we don't want to auto-log-in
       # unless the user is registered/pre_registered (if the latter, he still
@@ -2900,10 +2882,37 @@ class UsersController < ApplicationController
               :user => @user.errors.as_json[:errors],
               :pseudonym => @pseudonym ? @pseudonym.errors.as_json[:errors] : {},
               :observee => @invalid_observee_creds ? @invalid_observee_creds.errors.as_json[:errors] : {},
-              :pairing_code => @invalid_observee_code ? @invalid_observee_code.errors.as_json[:errors] : {}
+              :pairing_code => @invalid_observee_code ? @invalid_observee_code.errors.as_json[:errors] : {},
+              :recaptcha => @recaptcha_valid ? nil : @recaptcha_errors
           }
       }
       render :json => errors, :status => :bad_request
+    end
+  end
+
+  def find_observer_pairing_code(pairing_code)
+    ObserverPairingCode.active.where(code: pairing_code).first
+  end
+
+  def validate_recaptcha(recaptcha_response)
+    # if there is no recaptcha key or recaptcha is disabled, don't do anything
+    return nil unless recaptcha_enabled?
+    # Authenticated API requests do not require a captcha
+    return nil unless @access_token.nil?
+
+    response = CanvasHttp.post('https://www.google.com/recaptcha/api/siteverify', form_data: {
+      secret: Canvas::DynamicSettings.find(tree: :private)['recaptcha_server_key'],
+      response: recaptcha_response
+    })
+
+    if response && response.code == '200'
+      parsed = JSON.parse(response.body)
+      return { errors: parsed['error-codes'] } unless parsed['success']
+      return { errors: ['invalid-hostname'] } unless parsed['hostname'] == request.host
+
+      return nil
+    else
+      raise "Error connecting to recaptcha #{response}"
     end
   end
 end

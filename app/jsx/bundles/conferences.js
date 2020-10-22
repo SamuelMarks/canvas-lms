@@ -35,6 +35,13 @@ import 'jquery.loadingImg'
 import 'compiled/jquery.rails_flash_notifications'
 import 'jquery.templateData'
 import 'jquery.instructure_date_and_time'
+import renderConferenceAlternatives from '../conferences/renderAlternatives'
+
+if (ENV.can_create_conferences) {
+  if (ENV.render_alternatives) {
+    renderConferenceAlternatives()
+  }
+}
 
 const ConferencesRouter = Backbone.Router.extend({
   routes: {

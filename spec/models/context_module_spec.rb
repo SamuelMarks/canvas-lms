@@ -39,6 +39,15 @@ describe ContextModule do
     end
   end
 
+  describe "#set_root_account_id" do
+    subject { context_module.root_account }
+
+    let(:course) { course_factory }
+    let(:context_module) { course.context_modules.create! }
+
+    it { is_expected.to eq course.root_account }
+  end
+
   describe "publish_items!" do
     before :once do
       course_module
@@ -379,8 +388,8 @@ describe ContextModule do
       @attach = attachment_model context: @course, display_name: 'attach'
       @assign = @course.assignments.create! title: 'assign'
       @page = @course.wiki_pages.create! title: 'page'
-      @quiz = @course.quizzes.create! title: 'quiz'
-      @topic = @course.discussion_topics.create! title: 'topic'
+      @quiz = @course.quizzes.create! title: 'quiz', quiz_type: "assignment"
+      @topic = graded_discussion_topic context: @course, title: 'topic'
       @tool = @course.context_external_tools.create! name: 'tool', consumer_key: '1', shared_secret: '1', url: 'http://example.com/'
       @module.add_item(type: 'context_module_sub_header', title: 'one')
       @module.add_item(type: 'context_module_sub_header', title: 'two')
@@ -410,6 +419,12 @@ describe ContextModule do
       expect(empty.content_tags.order(:position).pluck(:title)).to eq(%w(attach assign))
     end
 
+    it "sets the indent to 0" do
+      empty = @course.context_modules.create! name: 'empty'
+      empty.insert_items([@attach, @assign])
+      expect(empty.content_tags.pluck(:indent)).to eq([0, 0])
+    end
+
     it "doesn't add weird things to a module" do
       @module.insert_items([@attach, user_model, 'foo', @assign])
       expect(@module.content_tags.order(:position).pluck(:title)).to eq(
@@ -434,6 +449,30 @@ describe ContextModule do
       @module.content_tags.find_by(title: 'two').destroy
       @module.insert_items([@attach, @assign], 3)
       expect(@module.content_tags.not_deleted.pluck(:title)).to eq(%w(one three attach assign))
+    end
+
+    it "respects the added items' published state" do
+      @page.unpublish!
+      m = @course.context_modules.create!
+      m.insert_items([@assign, @page, @tool])
+      expect(m.content_tags.pluck(:title, :workflow_state)).to eq(
+        [['assign', 'active'], ['page', 'unpublished'], ['tool', 'active']]
+      )
+    end
+
+    it "adds the submittable object when given a graded discussion topic or quiz's assignment" do
+      m = @course.context_modules.create!
+      m.insert_items([@quiz.assignment.reload, @topic.assignment.reload])
+      expect(m.content_tags.map(&:content_type)).to eq(%w(Quizzes::Quiz DiscussionTopic))
+      expect(m.content_tags.map(&:content_id)).to eq([@quiz.id, @topic.id])
+    end
+
+    it "doesn't add duplicate items" do
+      @module.add_item(type: 'assignment', id: @assign.id)
+      @module.insert_items([@page, @assign, @quiz])
+      expect(@module.content_tags.pluck(:content_type)).to eq(
+        ['ContextModuleSubHeader', 'ContextModuleSubHeader', 'ContextModuleSubHeader',
+         'Assignment', 'WikiPage', 'Quizzes::Quiz'])
     end
   end
 
@@ -985,6 +1024,7 @@ describe ContextModule do
 
     it "should mark progression completed for min_score on discussion topic assignment" do
       asmnt = assignment_model(:submission_types => "discussion_topic", :points_possible => 10)
+      asmnt.ensure_post_policy(post_manually: false)
       topic = asmnt.discussion_topic
       @course.offer
       course_with_student(:active_all => true, :course => @course)
@@ -1000,10 +1040,8 @@ describe ContextModule do
 
       topic.discussion_entries.create!(:message => "hi", :user => @student)
 
-      sub = asmnt.reload.submissions.first
-      sub.score = 5
-      sub.workflow_state = 'graded'
-      sub.save!
+      asmnt.reload.submissions.first
+      asmnt.grade_student(@student, grader: @teacher, score: 5)
 
       p = mod.evaluate_for(@student)
       expect(p.requirements_met).to eq [{:type=>"min_score", :min_score=>5, :id=>tag.id}]
@@ -1420,6 +1458,46 @@ describe ContextModule do
       @module.destroy
       @module.restore
       expect(@module.reload).to be_unpublished
+    end
+
+    it "should restore module items that were deleted at the same time the module was" do
+      course_factory
+      @module = @course.context_modules.create!
+      @a0 = @course.assignments.create! :name => 'a0'
+      @a1 = @course.assignments.create! :name => 'a1', :workflow_state => 'unpublished'
+      @a2 = @course.assignments.create! :name => 'a2', :workflow_state => 'published'
+      @p1 = @course.wiki_pages.create! :title => 'p1', :workflow_state => 'unpublished'
+      @p2 = @course.wiki_pages.create! :title => 'p2', :workflow_state => 'active'
+      Timecop.travel(2.weeks.ago) do
+        @module.add_item :type => 'sub_header', :title => 'foo'
+        @doomed_header = @module.add_item :type => 'sub_header', :title => 'baz'
+        @doomed_assignment = @module.add_item :type => 'assignment', :id => @a0.id
+      end
+      Timecop.travel(1.week.ago) do
+        @module.add_item :type => 'assignment', :id => @a1.id
+        @module.add_item :type => 'assignment', :id => @a2.id
+        @module.add_item :type => 'wiki_page', :id => @p1.id
+        @module.add_item :type => 'wiki_page', :id => @p2.id
+      end
+      Timecop.travel(6.days.ago) do
+        # these should not be restored because they were deleted before the module was
+        @doomed_header.destroy
+        @doomed_assignment.destroy
+      end
+      Timecop.travel(5.days.ago) do
+        @module.destroy
+      end
+      Timecop.travel(3.days.ago) do
+        @p1.destroy # don't restore tag for deleted asset
+        @p2.title = 'p2-renamed' # test updating restored tag with current asset name
+        @p2.save!
+      end
+      @module.restore
+      tags = @module.content_tags.not_deleted.order(:position).to_a
+      expect(tags.size).to eq 4
+      expect(tags.map(&:content_id)).to eq([0, @a1.id, @a2.id, @p2.id])
+      expect(tags.map(&:title)).to eq(['foo', 'a1', 'a2', 'p2-renamed'])
+      expect(tags.map(&:workflow_state)).to eq(['unpublished', 'unpublished', 'active', 'active'])
     end
   end
 

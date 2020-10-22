@@ -112,6 +112,39 @@ describe Folder do
     expect(f1.errors.detect { |e| e.first.to_s == 'name' }).to be_present
   end
 
+  describe "set folder root account id" do
+    before(:once) do
+      student_in_course
+      group_model(:context => @course)
+    end
+
+    it "when context is group" do
+      folder = @group.folders.create!
+      expect(folder.root_account_id).to eq @group.root_account_id
+    end
+
+    it "when context is account" do
+      account = @course.account.root_account.manually_created_courses_account
+      folder = account.folders.create!
+      expect(folder.root_account_id).to eq account.root_account_id
+    end
+
+    it "when context is a root account" do
+      folder = @course.root_account.folders.create!
+      expect(folder.root_account_id).to eq @course.root_account_id
+    end
+
+    it "when context is course" do
+      folder = @course.folders.create!
+      expect(folder.root_account_id).to eq @course.root_account_id
+    end
+
+    it "shouldn't happen when context is user" do
+      folder = @user.folders.create!
+      expect(folder.root_account_id).to eq 0
+    end
+  end
+
   it "files without an explicit folder_id should be inferred" do
     f = @course.folders.create!(:name => "unfiled")
     a = f.active_file_attachments.build

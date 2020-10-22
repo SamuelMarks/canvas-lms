@@ -400,6 +400,77 @@ describe User do
     expect(user.associated_root_accounts.to_a).to eql [account2]
   end
 
+  describe 'update_root_account_ids' do
+    let_once(:root_account) { Account.default }
+    let_once(:sub_account) { Account.create(parent_account: root_account, name: 'sub') }
+
+    let(:user) { user_model }
+
+    let(:root_account_association) do
+      user.user_account_associations.create!(account: root_account)
+      user.user_account_associations.find_by(account: root_account)
+    end
+
+    let(:sub_account_association) do
+      user.user_account_associations.create!(account: sub_account)
+      user.user_account_associations.find_by(account: sub_account)
+    end
+
+    before do
+      root_account_association
+      sub_account_association
+    end
+
+    context 'when there is a single root account association' do
+      it 'updates root_account_ids with the root account' do
+        expect {
+          user.update_root_account_ids
+        }.to change {
+          user.root_account_ids
+        }.from(nil).to([root_account.global_id])
+      end
+
+      context 'and communication channels for the user exist' do
+        let(:communication_channel) { user.communication_channels.create!(path: 'test@test.com') }
+
+        before { communication_channel.update(root_account_ids: nil) }
+
+        it 'updates root_account_ids on associated communication channels' do
+          expect {
+            user.update_root_account_ids
+          }.to change {
+            user.communication_channels.first.root_account_ids
+          }.from(nil).to([root_account.id])
+        end
+      end
+    end
+
+    context 'when there cross-shard root account associations' do
+      specs_require_sharding
+
+      let(:shard_two_root_account) { account_model }
+
+      before do
+        @shard2.activate do
+          user.user_account_associations.create!(
+            account: shard_two_root_account
+          )
+          user.associate_with_shard(@shard2)
+        end
+      end
+
+      it 'updates root_account_ids with all root accounts' do
+        expect {
+          user.update_root_account_ids
+        }.to change {
+          user.root_account_ids&.sort
+        }.from(nil).to(
+          [root_account.id, shard_two_root_account.global_id].sort
+        )
+      end
+    end
+  end
+
   describe "update_account_associations" do
     it "should support incrementally adding to account associations" do
       user = User.create!
@@ -451,6 +522,8 @@ describe User do
 
       account1.parent_account = account2
       account1.save!
+      @course.root_account = account2
+      @course.save!
       expect(@fake_student.reload.user_account_associations).to be_empty
 
       @course.complete!
@@ -525,12 +598,7 @@ describe User do
   end
 
   describe "#recent_feedback" do
-    let_once(:post_policies_course) do
-      course = Course.create!(workflow_state: :available)
-      course.enable_feature!(:new_gradebook)
-      PostPolicy.enable_feature!
-      course
-    end
+    let_once(:post_policies_course) { Course.create!(workflow_state: :available) }
     let_once(:auto_posted_assignment) { post_policies_course.assignments.create!(points_possible: 10) }
     let_once(:manual_posted_assignment) do
       assignment = post_policies_course.assignments.create!(points_possible: 10)
@@ -538,34 +606,12 @@ describe User do
       assignment
     end
 
-    let_once(:old_course) { Course.create!(workflow_state: :available) }
-    let_once(:unmuted_assignment) { old_course.assignments.create!(points_possible: 10) }
-    let_once(:muted_assignment) do
-      assignment = old_course.assignments.create!(points_possible: 10)
-      assignment.mute!
-      assignment
-    end
-
     let_once(:student) { User.create! }
     let_once(:teacher) { User.create! }
 
     before(:once) do
-      [post_policies_course, old_course].each do |course|
-        course.enroll_student(student, enrollment_state: :active)
-        course.enroll_teacher(teacher, enrollment_state: :active)
-      end
-    end
-
-    context "for a non-Post Policies course" do
-      it "does not include recent feedback for muted assignments" do
-        muted_assignment.grade_student(student, grader: teacher, score: 10)
-        expect(student.recent_feedback).to be_empty
-      end
-
-      it "includes recent feedback for unmuted assignments" do
-        unmuted_assignment.grade_student(student, grader: teacher, score: 10)
-        expect(student.recent_feedback).to contain_exactly(unmuted_assignment.submission_for_student(student))
-      end
+      post_policies_course.enroll_student(student, enrollment_state: :active)
+      post_policies_course.enroll_teacher(teacher, enrollment_state: :active)
     end
 
     context "for a course with Post Policies enabled" do
@@ -598,27 +644,28 @@ describe User do
       end
     end
 
-    context "when considering both types of courses simultaneously" do
-      it "only returns feedback for posted submissions and unmuted assignments" do
-        muted_assignment.grade_student(student, grader: teacher, score: 10)
-        unmuted_assignment.grade_student(student, grader: teacher, score: 10)
-        auto_posted_assignment.grade_student(student, grader: teacher, score: 10)
-        manual_posted_assignment.grade_student(student, grader: teacher, score: 10)
+    it "only returns feedback for posted submissions" do
+      auto_posted_assignment.grade_student(student, grader: teacher, score: 10)
+      manual_posted_assignment.grade_student(student, grader: teacher, score: 10)
 
-        expect(student.recent_feedback).to contain_exactly(
-          unmuted_assignment.submission_for_student(student),
-          auto_posted_assignment.submission_for_student(student)
-        )
-      end
+      expect(student.recent_feedback).to contain_exactly(
+        auto_posted_assignment.submission_for_student(student)
+      )
+    end
 
-      it "only returns feedback for specific courses if specified" do
-        unmuted_assignment.grade_student(student, grader: teacher, score: 10)
-        auto_posted_assignment.grade_student(student, grader: teacher, score: 10)
+    it "only returns feedback for specific courses if specified" do
+      other_course = Course.create!(workflow_state: :available)
+      other_course.enroll_student(student, enrollment_state: :active)
+      other_course.enroll_teacher(teacher, enrollment_state: :active)
+      auto_assignment = other_course.assignments.create!(points_possible: 10)
+      manual_assignment = other_course.assignments.create!(points_possible: 10)
+      manual_assignment.post_policy.update!(post_manually: true)
 
-        expect(student.recent_feedback(contexts: [post_policies_course])).to contain_exactly(
-          auto_posted_assignment.submission_for_student(student)
-        )
-      end
+      auto_assignment.grade_student(student, grader: teacher, score: 10)
+
+      expect(student.recent_feedback(contexts: [other_course])).to contain_exactly(
+        auto_assignment.submission_for_student(student)
+      )
     end
 
     it "includes recent feedback for student view users" do
@@ -795,6 +842,19 @@ describe User do
         @user.favorites.create!(:context => @course)
         expect(@user.courses_with_primary_enrollment(:favorite_courses)).to eq [@course]
       end
+
+      it "loads the roles correctly" do
+        @user = User.create!(:name => 'user')
+        @shard1.activate do
+          account = Account.create!
+          @course = account.courses.create!(:workflow_state => 'available')
+          @role = account.roles.create!(:name => "custom student", :base_role_type => "StudentEnrollment")
+          StudentEnrollment.create!(:course => @course, :user => @user, :workflow_state => 'active', :role => @role)
+        end
+        fetched_courses = @user.courses_with_primary_enrollment(:current_and_invited_courses, nil, :include_completed_courses => true)
+        expect(fetched_courses.count).to eq 1
+        expect(fetched_courses.first.primary_enrollment_role).to eq @role
+      end
     end
   end
 
@@ -956,7 +1016,9 @@ describe User do
     end
 
     it "should check both active and concluded courses" do
-      expect(@student1.check_courses_right?(@teacher1, :manage_wiki)).to be_truthy
+      expect(@student1.check_courses_right?(@teacher1, :manage_wiki_create)).to be_truthy
+      expect(@student1.check_courses_right?(@teacher1, :manage_wiki_update)).to be_truthy
+      expect(@student1.check_courses_right?(@teacher1, :manage_wiki_delete)).to be_truthy
       expect(@student2.check_courses_right?(@teacher2, :read_forum)).to be_truthy
       @concluded_course.grants_right?(@teacher2, :manage_wiki)
     end
@@ -1005,32 +1067,6 @@ describe User do
     # right?
     def search_messageable_users(viewing_user, *args)
       viewing_user.address_book.search_users(*args).paginate(:page => 1, :per_page => 20)
-    end
-
-    it "should include yourself even when not enrolled in courses" do
-      @student = user_model
-      expect(search_messageable_users(@student).map(&:id)).to include(@student.id)
-    end
-
-    it "should only return users from the specified context and type" do
-      @course.enroll_user(@student, 'StudentEnrollment', :enrollment_state => 'active')
-
-      expect(search_messageable_users(@student, :context => "course_#{@course.id}").map(&:id).sort).
-        to eql [@student, @this_section_user, @this_section_teacher, @other_section_user, @other_section_teacher].map(&:id).sort
-      expect(@student.count_messageable_users_in_course(@course)).to eql 5
-
-      expect(search_messageable_users(@student, :context => "course_#{@course.id}_students").map(&:id).sort).
-        to eql [@student, @this_section_user, @other_section_user].map(&:id).sort
-
-      expect(search_messageable_users(@student, :context => "group_#{@group.id}").map(&:id).sort).
-        to eql [@this_section_user].map(&:id).sort
-      expect(@student.count_messageable_users_in_group(@group)).to eql 1
-
-      expect(search_messageable_users(@student, :context => "section_#{@other_section.id}").map(&:id).sort).
-        to eql [@other_section_user, @other_section_teacher].map(&:id).sort
-
-      expect(search_messageable_users(@student, :context => "section_#{@other_section.id}_teachers").map(&:id).sort).
-        to eql [@other_section_teacher].map(&:id).sort
     end
 
     it "should not include users from other sections if visibility is limited to sections" do
@@ -1084,13 +1120,6 @@ describe User do
 
       messageable_users = search_messageable_users(@student, :context => "section_#{@other_section.id}").map(&:id)
       expect(messageable_users).not_to include @this_section_user.id
-      expect(messageable_users).to include @other_section_user.id
-    end
-
-    it "should include users from all sections if visibility is not limited to sections" do
-      @course.enroll_user(@student, 'StudentEnrollment', :enrollment_state => 'active')
-      messageable_users = search_messageable_users(@student).map(&:id)
-      expect(messageable_users).to include @this_section_user.id
       expect(messageable_users).to include @other_section_user.id
     end
 
@@ -1540,7 +1569,7 @@ describe User do
       user_factory
       @user2 = @user
       @user2.update_attribute(:workflow_state, 'creation_pending')
-      @user2.communication_channels.create!(:path => @cc.path)
+      communication_channel(@user2, {username: @cc.path})
       course_factory(active_all: true)
       @course.enroll_user(@user2)
 
@@ -1622,7 +1651,7 @@ describe User do
       user_factory
       @user2 = @user
       @user2.update_attribute(:workflow_state, 'creation_pending')
-      @user2.communication_channels.create!(:path => @cc.path)
+      communication_channel(@user2, {username: @cc.path})
       course_factory(active_all: true)
       @enrollment = @course.enroll_user(@user2)
 
@@ -1789,9 +1818,9 @@ describe User do
   describe "email_channel" do
     it "should not return retired channels" do
       u = User.create!
-      retired = u.communication_channels.create!(:path => 'retired@example.com', :path_type => 'email') { |cc| cc.workflow_state = 'retired'}
+      communication_channel(u, {username: 'retired@example.com', cc_state: 'retired'})
       expect(u.email_channel).to be_nil
-      active = u.communication_channels.create!(:path => 'active@example.com', :path_type => 'email') { |cc| cc.workflow_state = 'active'}
+      active = communication_channel(u, {username: 'active@example.com', active_cc: true})
       expect(u.email_channel).to eq active
     end
   end
@@ -1813,10 +1842,20 @@ describe User do
     it "restores retired channels" do
       @user = User.create!
       path = 'john@example.com'
-      @user.communication_channels.create!(:path => path, :workflow_state => "retired")
+      communication_channel(@user, {username: path, cc_state: 'retired'})
       @user.email = path
       expect(@user.communication_channels.first).to be_unconfirmed
       expect(@user.email).to eq 'john@example.com'
+    end
+
+    it "allows the email casing to be updated" do
+      @user = User.create!
+      @user.email = 'EMAIL@example.com'
+      expect(@user.communication_channels.map(&:path)).to eq ['EMAIL@example.com']
+      expect(@user.email).to eq 'EMAIL@example.com'
+      @user.email = 'email@example.com'
+      expect(@user.communication_channels.map(&:path)).to eq ['email@example.com']
+      expect(@user.email).to eq 'email@example.com'
     end
   end
 
@@ -2337,6 +2376,38 @@ describe User do
     end
   end
 
+  describe "send_scores_in_emails" do
+    before :once do
+      course_with_student(:active_all => true)
+    end
+
+    it "returns false if the root account setting is disabled" do
+      root_account = @course.root_account
+      root_account.settings[:allow_sending_scores_in_emails] = false
+      root_account.save!
+
+      expect(@student.send_scores_in_emails?(@course)).to be false
+    end
+
+    it "uses the user preference setting if no course overrides are available" do
+      @student.preferences[:send_scores_in_emails] = true
+      expect(@student.send_scores_in_emails?(@course)).to be true
+
+      @student.preferences[:send_scores_in_emails] = false
+      expect(@student.send_scores_in_emails?(@course)).to be false
+    end
+
+    it "uses course overrides if available" do
+      @student.preferences[:send_scores_in_emails] = false
+      @student.set_preference(:send_scores_in_emails_override, "course_" + @course.global_id.to_s, true)
+      expect(@student.send_scores_in_emails?(@course)).to be true
+
+      @student.preferences[:send_scores_in_emails] = true
+      @student.set_preference(:send_scores_in_emails_override, "course_" + @course.global_id.to_s, false)
+      expect(@student.send_scores_in_emails?(@course)).to be false
+    end
+  end
+
   describe "preferred_gradebook_version" do
     subject { user.preferred_gradebook_version }
 
@@ -2650,9 +2721,9 @@ describe User do
         # create account on another shard
         account = @shard1.activate{ Account.create! }
         # associate target user with that account
-        account_admin_user(user: target, account: account, role: Role.get_built_in_role('AccountMembership'))
+        account_admin_user(user: target, account: account, role: Role.get_built_in_role('AccountMembership', root_account_id: account.id))
         # create seeking user as admin on that account
-        seeker = account_admin_user(account: account, role: Role.get_built_in_role('AccountAdmin'))
+        seeker = account_admin_user(account: account, role: Role.get_built_in_role('AccountAdmin', root_account_id: account.id))
         # ensure seeking user gets permissions it should on target user
         expect(target.grants_right?(seeker, :view_statistics)).to be_truthy
       end
@@ -2662,9 +2733,9 @@ describe User do
         # create account on another shard
         account = @shard1.activate{ Account.create! }
         # associate target user with that account
-        account_admin_user(user: target, account: account, role: Role.get_built_in_role('AccountMembership'))
+        account_admin_user(user: target, account: account, role: Role.get_built_in_role('AccountMembership', root_account_id: account.id))
         # create seeking user as admin on that account
-        seeker = account_admin_user(account: account, role: Role.get_built_in_role('AccountAdmin'))
+        seeker = account_admin_user(account: account, role: Role.get_built_in_role('AccountAdmin', root_account_id: account.id))
         allow(seeker).to receive(:associated_shards).and_return([])
         # ensure seeking user gets permissions it should on target user
         expect(target.grants_right?(seeker, :view_statistics)).to eq true
@@ -2893,7 +2964,7 @@ describe User do
 
     it "includes 'student' if the user has a student view student enrollment" do
       @user = @course.student_view_student
-      expect(@user.roles(@account)).to eq %w[user student]
+      expect(@user.roles(@account)).to eq %w[user student fake_student]
     end
 
     it "includes 'teacher' if the user has a teacher enrollment" do
@@ -3002,6 +3073,33 @@ describe User do
       f.submission_context_code = @course.asset_string
       f.save!
       expect(@user.submissions_folder(@course)).to eq f
+    end
+  end
+
+  describe "submittable_attachments" do
+    before(:once) do
+      student_in_course
+      group_model
+      @other_group = @group
+      group_model
+      @group.add_user @student
+      @a1 = attachment_with_context(@student)
+      @a2 = attachment_with_context(@group)
+      @a3 = attachment_with_context(@other_group)
+    end
+
+    it 'matches non-deleted attachments in user or group context' do
+      expect(@student.submittable_attachments.pluck(:id)).to match_array [@a1, @a2].map(&:id)
+    end
+
+    it 'excludes deleted files' do
+      @a1.destroy
+      expect(@student.submittable_attachments.pluck(:id)).to eq [@a2.id]
+    end
+
+    it 'excludes deleted group memberships' do
+      @student.group_memberships.where(group_id: @group.id).take.destroy
+      expect(@student.submittable_attachments.pluck(:id)).to eq [@a1.id]
     end
   end
 
@@ -3238,6 +3336,47 @@ describe User do
       @student.generate_observer_pairing_code
       pairing_code = @student.generate_observer_pairing_code
       expect(pairing_code.code).to eq '123abc'
+    end
+  end
+
+  describe "#prefers_no_celebrations?" do
+    let(:user) { user_model }
+
+    it "returns false by default" do
+      expect(user.prefers_no_celebrations?).to eq false
+    end
+
+    context "user has opted out of celebrations" do
+      before :each do
+        user.enable_feature!(:disable_celebrations)
+      end
+
+      it "returns true" do
+        expect(user.prefers_no_celebrations?).to eq true
+      end
+    end
+  end
+
+  describe "#prefers_no_keyboard_shortcuts?" do
+    let(:user) { user_model }
+
+    it "returns false by default" do
+      expect(user.prefers_no_keyboard_shortcuts?).to eq false
+    end
+
+    it "returns true if user disables keyboard shortcuts" do
+      user.enable_feature!(:disable_keyboard_shortcuts)
+      expect(user.prefers_no_keyboard_shortcuts?).to eq true
+    end
+  end
+
+  describe "with_last_login" do
+    it "should not double the users select if select values are already present" do
+      expect(User.all.order_by_sortable_name.with_last_login.to_sql.scan(".*").count).to eq 1
+    end
+
+    it "should still include it if select values aren't present" do
+      expect(User.all.with_last_login.to_sql.scan(".*").count).to eq 1
     end
   end
 end

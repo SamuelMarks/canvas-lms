@@ -148,8 +148,8 @@ describe "dashboard" do
       fj('span[role="menuitemradio"]:contains("Recent Activity")').click
       messages = ff("#dashboard .account_notification .notification_message")
       expect(messages.size).to eq 2
-      expect(messages[0].text).to eq a1.message
-      expect(messages[1].text).to eq a2.message
+      expect(messages[0].text).to eq a2.message
+      expect(messages[1].text).to eq a1.message
     end
 
     it "should interpolate the user's domain in global notifications" do
@@ -230,10 +230,6 @@ describe "dashboard" do
         list = fj("[aria-label='Groups tray']")
         expect(list).to include_text(group.name)
         expect(list).to_not include_text(other_group.name)
-      end
-
-      it "should present /courses as the href of the courses nav item", priority: "2", test_id: 215612 do
-        expect(f('#global_nav_courses_link').attribute('href')).to match(/\/courses$/)
       end
 
       it "should go to a course when clicking a course link from the menu", priority: "1", test_id: 215614 do

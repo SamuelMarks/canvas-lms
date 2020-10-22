@@ -65,10 +65,12 @@ export default class FeatureFlagView extends Backbone.View {
 
   applyAction(action) {
     $.when(this.canUpdate(action)).then(
-      $.when(this.checkSiteAdmin()).then(
-        () => this.model.updateState(action),
-        () => this.render() // undo UI change if user cancels
-      )
+      () =>
+        $.when(this.checkSiteAdmin()).then(
+          () => this.model.updateState(action),
+          () => this.render() // undo UI change if user cancels
+        ),
+      () => this.render() // ditto
     )
   }
 
@@ -80,7 +82,8 @@ export default class FeatureFlagView extends Backbone.View {
       deferred,
       message: warning.message,
       title: this.model.get('display_name'),
-      hasCancelButton: !warning.locked
+      hasCancelButton: !warning.locked && !warning.reload_page,
+      reloadOnConfirm: Boolean(warning.reload_page)
     })
     view.render()
     view.show()

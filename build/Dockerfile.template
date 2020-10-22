@@ -1,27 +1,32 @@
 <%= generation_message %>
-# See doc/docker/README.md or https://github.com/instructure/canvas-lms/tree/master/doc/docker
-FROM instructure/ruby-passenger:2.4-xenial
+ARG RUBY=2.6-p6.0.4
 
+FROM instructure/ruby-passenger:$RUBY
+LABEL maintainer="Instructure"
+
+ARG POSTGRES_CLIENT=12
 ENV APP_HOME /usr/src/app/
-ENV RAILS_ENV "production"
+ENV RAILS_ENV production
 ENV NGINX_MAX_UPLOAD_SIZE 10g
-ENV YARN_VERSION 1.19.1-1
+ENV LANG en_US.UTF-8
+ENV LANGUAGE en_US.UTF-8
+ENV LC_CTYPE en_US.UTF-8
+ENV LC_ALL en_US.UTF-8
 
-# Work around github.com/zertosh/v8-compile-cache/issues/2
-# This can be removed once yarn pushes a release including the fixed version
-# of v8-compile-cache.
-ENV DISABLE_V8_COMPILE_CACHE 1
+ENV YARN_VERSION 1.19.1-1
+ENV GEM_HOME /home/docker/.gem/$RUBY
+ENV PATH $GEM_HOME/bin:$PATH
+ENV BUNDLE_APP_CONFIG /home/docker/.bundle
+
+WORKDIR $APP_HOME
 
 USER root
-WORKDIR /root
 RUN curl -sL https://deb.nodesource.com/setup_10.x | bash - \
   && curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add - \
   && echo "deb https://dl.yarnpkg.com/debian/ stable main" > /etc/apt/sources.list.d/yarn.list \
   && printf 'path-exclude /usr/share/doc/*\npath-exclude /usr/share/man/*' > /etc/dpkg/dpkg.cfg.d/01_nodoc \
-<% unless production? -%>
   && echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
   && curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
-<% end -%>
   && apt-get update -qq \
   && apt-get install -qqy --no-install-recommends \
        nodejs \
@@ -29,105 +34,92 @@ RUN curl -sL https://deb.nodesource.com/setup_10.x | bash - \
        libxmlsec1-dev \
        python-lxml \
        libicu-dev \
-<% unless production? -%>
-       postgresql-client-9.5 \
+       parallel \
+       postgresql-client-$POSTGRES_CLIENT \
        unzip \
        pbzip2 \
        fontforge \
-<% end -%>
-  && apt-get clean \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /home/docker/.gem/ruby/$RUBY_MAJOR.0
-
 RUN if [ -e /var/lib/gems/$RUBY_MAJOR.0/gems/bundler-* ]; then BUNDLER_INSTALL="-i /var/lib/gems/$RUBY_MAJOR.0"; fi \
   && gem uninstall --all --ignore-dependencies --force $BUNDLER_INSTALL bundler \
   && gem install bundler --no-document -v 1.17.3 \
   && find $GEM_HOME ! -user docker | xargs chown docker:docker
 
-<% if development? -%>
-# We will need sfnt2woff in order to build fonts
-COPY build/vendor/woff-code-latest.zip ./
-RUN unzip woff-code-latest.zip -d woff \
-  && cd woff \
-  && make \
-  && cp sfnt2woff /usr/local/bin \
-  && cd - \
-  && rm -rf woff*
+USER docker
+
+COPY --chown=docker:docker config/canvas_rails_switcher.rb ${APP_HOME}/config/canvas_rails_switcher.rb
+COPY --chown=docker:docker Gemfile   ${APP_HOME}
+COPY --chown=docker:docker Gemfile.d ${APP_HOME}Gemfile.d
+
+<% if jenkins? -%>
+COPY --chown=docker:docker --from=local/cache-helper-collect-gems /tmp/dst ${APP_HOME}
+<% else -%>
+COPY --chown=docker:docker gems      ${APP_HOME}gems
 <% end -%>
 
-WORKDIR $APP_HOME
-<% if production? -%>
-
-COPY . $APP_HOME
-
-# optimizing for size here ... get all the dev dependencies so we can
-# compile assets, then throw away everything we don't need
-#
-# the privilege dropping could be slightly less verbose if we ever add
-# gosu (here or upstream)
-#
-# TODO: once we have docker 17.05+ everywhere, do this via multi-stage
-# build
-
-RUN bash -c ' \
-  # bash cuz better globbing and comments \
-  set -e; \
+RUN set -eux; \
   \
-  sudo -u docker -E env HOME=/home/docker PATH=$PATH bundle install --jobs 8; \
-  yarn install --pure-lockfile; \
-  COMPILE_ASSETS_NPM_INSTALL=0 bundle exec rake canvas:compile_assets; \
-  \
-  # downgrade to prod dependencies \
-  sudo -u docker -E env HOME=/home/docker PATH=$PATH bundle install --without test development; \
-  sudo -u docker -E env HOME=/home/docker PATH=$PATH bundle clean --force; \
-  yarn install --prod; \
-  \
-  # now some cleanup... \
-  rm -rf \
-    /home/docker/.bundle/cache \
-    $GEM_HOME/cache \
-    $GEM_HOME/bundler/gems/*/{.git,spec,test,features} \
-    $GEM_HOME/gems/*/{spec,test,features} \
-    `yarn cache dir` \
-    /root/.node-gyp \
-    /tmp/phantomjs \
-    .yardoc \
-    client_apps/canvas_quizzes/{tmp,node_modules} \
-    config/locales/generated \
-    gems/*/node_modules \
-    gems/plugins/*/node_modules \
-    log \
-    public/dist/maps \
-    public/doc/api/*.json \
-    public/javascripts/translations \
-    tmp-*.tmp'
+  # set up bundle config options \
+  bundle config --global build.nokogiri --use-system-libraries \
+  && bundle config --global build.ffi --enable-system-libffi \
+  && mkdir -p \
+    /home/docker/.bundle \
+  # TODO: --without development \
+  && bundle install --jobs $(nproc) \
+  && rm -rf $GEM_HOME/cache
 
-USER docker
+COPY --chown=docker:docker package.json ${APP_HOME}
+COPY --chown=docker:docker yarn.lock    ${APP_HOME}
+
+<% if jenkins? -%>
+COPY --chown=docker:docker --from=local/cache-helper-collect-yarn /tmp/dst ${APP_HOME}
 <% else -%>
-
-COPY Gemfile      ${APP_HOME}
-COPY Gemfile.d    ${APP_HOME}Gemfile.d
-COPY config       ${APP_HOME}config
-COPY --chown=docker:docker gems         ${APP_HOME}gems
+COPY --chown=docker:docker client_apps  ${APP_HOME}client_apps
 COPY --chown=docker:docker packages     ${APP_HOME}packages
-COPY script       ${APP_HOME}script
-COPY package.json ${APP_HOME}
-COPY yarn.lock    ${APP_HOME}
-COPY babel.config.js ${APP_HOME}
+<% end -%>
 
-# Install deps as docker to avoid sadness w/ npm lifecycle hooks
-USER docker
-RUN bundle install --jobs 8 \
-  && yarn install --pure-lockfile
-USER root
+RUN set -eux; \
+  mkdir -p <%= docker_compose_volume_paths.join(" \\\n             ") %> \
+  && (DISABLE_POSTINSTALL=1 yarn install --ignore-optional --pure-lockfile || DISABLE_POSTINSTALL=1 yarn install --ignore-optional --pure-lockfile --network-concurrency 1) \
+  && yarn cache clean
 
-COPY . $APP_HOME
-RUN mkdir -p <%= docker_compose_volume_paths.join(" \\\n             ") %> \
-  && find ${APP_HOME} /home/docker ! -user docker -print0 | xargs -0 chown -h docker:docker
+COPY --chown=docker:docker babel.config.js ${APP_HOME}
+<% if jenkins? -%>
+COPY --chown=docker:docker packages        ${APP_HOME}packages
+<% end -%>
+COPY --chown=docker:docker script          ${APP_HOME}script
 
-USER docker
-# update Gemfile.lock in cases where a lock file was pulled in during the `COPY . $APP_HOME` step
-RUN bundle lock --update
-# TODO: switch to canvas:compile_assets_dev once we stop using this Dockerfile in production/e2e
-RUN COMPILE_ASSETS_NPM_INSTALL=0 bundle exec rake canvas:compile_assets
+RUN yarn postinstall
+
+<% if jenkins? -%>
+COPY --chown=docker:docker app/coffeescripts ${APP_HOME}app/coffeescripts
+COPY --chown=docker:docker app/jsx ${APP_HOME}app/jsx
+COPY --chown=docker:docker app/stylesheets ${APP_HOME}app/stylesheets
+COPY --chown=docker:docker app/views/jst ${APP_HOME}app/views/jst
+COPY --chown=docker:docker bin ${APP_HOME}bin
+COPY --chown=docker:docker client_apps ${APP_HOME}client_apps
+COPY --chown=docker:docker db/migrate/*_regenerate_brand_files_based_on_new_defaults_*.rb ${APP_HOME}db/migrate/
+COPY --chown=docker:docker frontend_build ${APP_HOME}frontend_build
+COPY --chown=docker:docker --from=local/cache-helper-collect-webpack /tmp/dst ${APP_HOME}
+COPY --chown=docker:docker public ${APP_HOME}public
+COPY --chown=docker:docker Rakefile ${APP_HOME}
+COPY --chown=docker:docker gulpfile.js ${APP_HOME}
+COPY --chown=docker:docker webpack.config.js ${APP_HOME}
+COPY --chown=docker:docker .bowerrc ${APP_HOME}
+COPY --chown=docker:docker .i18nignore ${APP_HOME}
+COPY --chown=docker:docker .i18nrc ${APP_HOME}
+
+ARG JS_BUILD_NO_UGLIFY=0
+RUN COMPILE_ASSETS_API_DOCS=0 COMPILE_ASSETS_NPM_INSTALL=0 COMPILE_ASSETS_STYLEGUIDE=0 JS_BUILD_NO_UGLIFY="$JS_BUILD_NO_UGLIFY" bundle exec rails canvas:compile_assets
+
+COPY --chown=docker:docker . ${APP_HOME}
+
+ARG COMPILE_ADDITIONAL_ASSETS=0
+RUN bash -c "if [[ "$COMPILE_ADDITIONAL_ASSETS" == "1" ]]; then bundle exec rails doc:api css:styleguide; fi"
+<% else -%>
+COPY --chown=docker:docker . ${APP_HOME}
+
+ARG JS_BUILD_NO_UGLIFY=0
+RUN COMPILE_ASSETS_NPM_INSTALL=0 JS_BUILD_NO_UGLIFY="$JS_BUILD_NO_UGLIFY" bundle exec rails canvas:compile_assets
 <% end -%>

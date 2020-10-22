@@ -28,15 +28,13 @@ module BroadcastPolicies
       accepting_messages? &&
       assignment.changed_in_state(:published, :fields => :due_at) &&
       !just_published? &&
-      !AssignmentPolicy.due_dates_equal?(assignment.due_at, assignment.due_at_before_last_save) &&
-      created_before(3.hours.ago)
+      !AssignmentPolicy.due_dates_equal?(assignment.due_at, assignment.due_at_before_last_save)
     end
 
     def should_dispatch_assignment_changed?
       accepting_messages? &&
       assignment.published? &&
       !assignment.muted? &&
-      created_before(30.minutes.ago) &&
       !just_published? &&
       (assignment.saved_change_to_points_possible? || assignment.assignment_changed)
     end
@@ -46,13 +44,6 @@ module BroadcastPolicies
 
       published_on_create? || just_published? ||
         (assignment.saved_change_to_workflow_state? && assignment.published?)
-    end
-
-    def should_dispatch_assignment_unmuted?
-      # This is handled by individual submissions in the Post Policies era.
-      return false if assignment.context.post_policies_enabled?
-      context_sendable? &&
-        assignment.recently_unmuted
     end
 
     def should_dispatch_submissions_posted?

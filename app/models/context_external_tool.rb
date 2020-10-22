@@ -19,6 +19,7 @@ require 'redcarpet'
 class ContextExternalTool < ActiveRecord::Base
   include Workflow
   include SearchTermHelper
+  include PermissionsHelper
 
   has_many :content_tags, :as => :content
   has_many :context_external_tool_placements, :autosave => true
@@ -58,6 +59,7 @@ class ContextExternalTool < ActiveRecord::Base
   QUIZ_LTI = 'Quizzes 2'.freeze
   ANALYTICS_2 = 'fd75124a-140e-470f-944c-114d2d93bb40'.freeze
   TOOL_FEATURE_MAPPING = { ANALYTICS_2 => :analytics_2 }.freeze
+  PREFERRED_LTI_VERSION = '1_3'.freeze
 
   workflow do
     state :anonymous
@@ -76,7 +78,8 @@ class ContextExternalTool < ActiveRecord::Base
   Lti::ResourcePlacement::PLACEMENTS.each do |type|
     class_eval <<-RUBY, __FILE__, __LINE__ + 1
       def #{type}(setting=nil)
-        extension_setting(:#{type}, setting)
+        # expose inactive placements to API
+        extension_setting(:#{type}, setting) || extension_setting(:inactive_placements, :#{type})
       end
 
       def #{type}=(hash)
@@ -126,7 +129,8 @@ class ContextExternalTool < ActiveRecord::Base
 
     hash = hash.with_indifferent_access
     hash[:enabled] = Canvas::Plugin.value_to_boolean(hash[:enabled]) if hash[:enabled]
-    settings[type] = {}.with_indifferent_access
+    # merge with existing settings so that no caller can complain
+    settings[type] = (settings[type] || {}).with_indifferent_access
 
     extension_keys = [
       :canvas_icon_class,
@@ -160,6 +164,22 @@ class ContextExternalTool < ActiveRecord::Base
       end
     end
 
+    # on deactivation, make sure placement data is kept
+    if settings[type].key?(:enabled) && !settings[type][:enabled]
+      settings[:inactive_placements] ||= {}.with_indifferent_access
+      settings[:inactive_placements][type] ||= {}.with_indifferent_access
+      settings[:inactive_placements][type].merge!(settings[type])
+      settings.delete(type)
+      return
+    end
+
+    # on reactivation, use the old placement data
+    if settings[type][:enabled] && settings.dig(:inactive_placements, type)
+      settings[type] = settings.dig(:inactive_placements, type).merge(settings[type])
+      settings[:inactive_placements].delete(type)
+      settings.delete(:inactive_placements) if settings[:inactive_placements].empty?
+    end
+
     settings[type]
   end
 
@@ -171,6 +191,22 @@ class ContextExternalTool < ActiveRecord::Base
       !!(self.selectable && (self.domain || self.url))
     else
       self.context_external_tool_placements.to_a.any?{|p| p.placement_type == type.to_s}
+    end
+  end
+
+  def can_be_rce_favorite?
+    !self.editor_button.nil?
+  end
+
+  def is_rce_favorite_in_context?(context)
+    context = context.context if context.is_a?(Group)
+    context = context.account if context.is_a?(Course)
+    rce_favorite_tool_ids = context.rce_favorite_tool_ids[:value]
+    if rce_favorite_tool_ids
+      rce_favorite_tool_ids.include?(self.global_id)
+    else
+      # TODO remove after the datafixup and this column is dropped
+      self.is_rce_favorite
     end
   end
 
@@ -347,6 +383,14 @@ class ContextExternalTool < ActiveRecord::Base
     settings[:use_1_3] = bool
   end
 
+  def uses_preferred_lti_version?
+    !!send("use_#{PREFERRED_LTI_VERSION}?")
+  end
+
+  def active?
+    ['deleted', 'disabled'].exclude? workflow_state
+  end
+
   def self.find_custom_fields_from_string(str)
     return {} if str.nil?
     str.split(/[\r\n]+/).each_with_object({}) do |line, hash|
@@ -464,15 +508,14 @@ class ContextExternalTool < ActiveRecord::Base
     self.url = nil if url.blank?
     self.domain = nil if domain.blank?
     self.root_account ||= context.root_account
-
+    self.is_rce_favorite &&= self.can_be_rce_favorite?
     ContextExternalTool.normalize_sizes!(self.settings)
 
     Lti::ResourcePlacement::PLACEMENTS.each do |type|
-      if settings[type]
-        if !(extension_setting(type, :url)) || (settings[type].has_key?(:enabled) && !settings[type][:enabled])
-          settings.delete(type)
-        end
-      end
+      next unless settings[type]
+      next if settings[type].key? :enabled
+
+      settings.delete(type) unless extension_setting(type, :url)
     end
 
     settings.delete(:editor_button) unless editor_button(:icon_url) || editor_button(:canvas_icon_class)
@@ -596,6 +639,30 @@ end
     self.class.all_tools_for(context).where.not(id: id).where(domain: domain).present? && domain.present?
   end
 
+  def check_for_duplication(verify_uniqueness)
+    if duplicated_in_context? && verify_uniqueness
+      errors.add(:tool_currently_installed, 'The tool is already installed in this context.')
+    end
+  end
+
+  def self.from_content_tag(tag, context)
+    return nil if tag.blank? || context.blank?
+
+    # We can simply return the content if we
+    # know it uses the preferred LTI version.
+    # No need to go through the tool lookup logic.
+    content = tag.content
+    return content if content&.active? && content&.uses_preferred_lti_version?
+
+    # Lookup the tool by the usual "find_external_tool"
+    # method. Fall back on the tag's content if
+    # no matches found.
+    find_external_tool(
+      tag.url,
+      context
+    ) || tag.content
+  end
+
   def self.contexts_to_search(context)
     case context
     when Course
@@ -654,29 +721,88 @@ end
   # the teacher).
   #
   # Tools with exclude_tool_id as their ID will never be returned.
-  def self.find_external_tool(url, context, preferred_tool_id=nil, exclude_tool_id=nil)
-    contexts = contexts_to_search(context)
-    preferred_tool = ContextExternalTool.active.where(id: preferred_tool_id).first if preferred_tool_id
-    if preferred_tool && contexts.member?(preferred_tool.context) && (url == nil || preferred_tool.matches_domain?(url))
-      return preferred_tool
+  def self.find_external_tool(url, context, preferred_tool_id=nil, exclude_tool_id=nil, preferred_client_id=nil)
+    GuardRail.activate(:secondary) do
+      contexts = contexts_to_search(context)
+      preferred_tool = ContextExternalTool.active.where(id: preferred_tool_id).first if preferred_tool_id
+
+      if preferred_tool && contexts.member?(preferred_tool.context) && (url == nil || preferred_tool.matches_domain?(url))
+        return preferred_tool
+      end
+
+      return nil unless url
+
+      query = ContextExternalTool.shard(context.shard).polymorphic_where(context: contexts).active
+      query = query.where(developer_key_id: preferred_client_id) if preferred_client_id
+
+      all_external_tools = query.to_a
+      sorted_external_tools = all_external_tools.sort_by do |t|
+        [contexts.index { |c| c.id == t.context_id && c.class.name == t.context_type }, t.precedence, t.id == preferred_tool_id ? CanvasSort::First : CanvasSort::Last]
+      end
+
+      search_options = { exclude_tool_id: exclude_tool_id }
+
+      # Check for a tool that exactly matches the given URL
+      match = find_tool_match(
+        url,
+        sorted_external_tools,
+        -> (t, u) { t.matches_url?(u) },
+        -> (t) { t.url.present? },
+        search_options
+      )
+
+      # If exactly match doesn't work, try to match by ignoring extra query parameters
+      match ||= find_tool_match(
+        url,
+        sorted_external_tools,
+        -> (t, u) { t.matches_url?(u, false) },
+        -> (t) { t.url.present? },
+        search_options
+      )
+
+      # If still no matches, use domain matching to try to find a tool
+      match ||= find_tool_match(
+        url,
+        sorted_external_tools,
+        -> (t, _u) { t.matches_tool_domain?(url) },
+        -> (t) { t.domain.present? },
+        search_options
+      )
+
+      match
+    end
+  end
+
+  # Given a collection of tools, finds the first tool that exactly
+  # matches the given URL.
+  #
+  # If a preferred LTI version is specified, this method will use
+  # LTI version as a tie-breaker.
+  def self.find_tool_match(url, sorted_tool_collection, matcher, matcher_condition, opts)
+    exclude_tool_id = opts[:exclude_tool_id]
+
+    # Find tools that match the given matcher
+    exact_matches = sorted_tool_collection.select do |tool|
+      matcher_condition.call(tool) && matcher.call(tool, url) && tool.id != exclude_tool_id
     end
 
-    return nil unless url
+    # There was only a single match, so return it
+    return exact_matches.first if exact_matches.count == 1
 
-    all_external_tools = ContextExternalTool.shard(context.shard).polymorphic_where(context: contexts).active.to_a
-    sorted_external_tools = all_external_tools.sort_by { |t| [contexts.index { |c| c.id == t.context_id && c.class.name == t.context_type }, t.precedence, t.id == preferred_tool_id ? CanvasSort::First : CanvasSort::Last] }
+    version_match = find_exact_version_match(exact_matches)
 
-    res = sorted_external_tools.detect{ |tool| tool.url && tool.matches_url?(url) && tool.id != exclude_tool_id }
-    return res if res
+    # There is no LTI version preference or no matching
+    # version was found. Return the first matched tool
+    return exact_matches.first if version_match.blank?
 
-    # If exactly match doesn't work, try to match by ignoring extra query parameters
-    res = sorted_external_tools.detect{ |tool| tool.url && tool.matches_url?(url, false) && tool.id != exclude_tool_id }
-    return res if res
+    # An LTI version is preferred and found, return it
+    version_match
+  end
 
-    res = sorted_external_tools.detect{ |tool| tool.domain && tool.matches_tool_domain?(url) && tool.id != exclude_tool_id }
-    return res if res
-
-    nil
+  # Given a collection of tools, finds the first with the given LTI version
+  # If no matches were detected, returns nil
+  def self.find_exact_version_match(sorted_tool_collection)
+    sorted_tool_collection.find { |t| t.uses_preferred_lti_version? }
   end
 
   scope :having_setting, lambda { |setting| setting ? joins(:context_external_tool_placements).
@@ -805,7 +931,28 @@ end
     if (required_permissions_str = self.extension_setting(launch_type, 'required_permissions'))
       # if configured with a comma-separated string of permissions, will only show the link
       # if all permissions are granted
-      required_permissions_str.split(",").map(&:to_sym).all?{|p| context&.grants_right?(user, session, p)}
+      required_permissions_str.split(",").map(&:to_sym).all? do |p|
+        permission_given = context&.grants_right?(user, session, p)
+
+        # Global navigation tools are always installed in the root account.
+        # This means if the current user is using a course-based role, the
+        # standard `grants_right?` call to the context (always the root account)
+        # will always fail.
+        #
+        # If this is the scenario, check to see if the user has any active enrollments
+        # in the account with the required permission. If they do, grant access.
+        if !permission_given &&
+          context.present? &&
+          launch_type.to_s == Lti::ResourcePlacement::GLOBAL_NAVIGATION.to_s
+        then
+          permission_given = manageable_enrollments_by_permission(
+            p,
+            user.enrollments_for_account_and_sub_accounts(context.root_account)
+          ).present?
+        end
+
+        permission_given
+      end
     else
       true
     end
@@ -835,7 +982,7 @@ end
   end
 
   def clear_tool_domain_cache
-    if self.saved_change_to_domain? || self.saved_change_to_url?
+    if self.saved_change_to_domain? || self.saved_change_to_url? || self.saved_change_to_workflow_state?
       self.context.clear_tool_domain_cache
     end
   end
@@ -854,7 +1001,7 @@ end
         batch_object: user, batched_keys: [:enrollments, :account_users]) do
       # let them see admin level tools if there are any courses they can manage
       if root_account.grants_right?(user, :manage_content) ||
-        Course.manageable_by_user(user.id, true).not_deleted.where(:root_account_id => root_account).exists?
+        GuardRail.activate(:secondary) { Course.manageable_by_user(user.id, false).not_deleted.where(:root_account_id => root_account).exists? }
         'admins'
       else
         'members'
@@ -939,6 +1086,7 @@ end
       {
           :name => tool.label_for(:editor_button, I18n.locale),
           :id => tool.id,
+          :favorite => tool.is_rce_favorite_in_context?(context),
           :url => tool.editor_button(:url),
           :icon_url => tool.editor_button(:icon_url),
           :canvas_icon_class => tool.editor_button(:canvas_icon_class),

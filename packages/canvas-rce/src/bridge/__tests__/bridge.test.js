@@ -74,10 +74,15 @@ describe('Editor/Sidebar bridge', () => {
     beforeEach(() => {
       jest.spyOn(console, 'warn')
       editor = {
+        id: 'editor_id',
+        addAlert: jest.fn(),
         insertLink: jest.fn(),
         insertVideo: jest.fn(),
         insertAudio: jest.fn(),
         insertEmbedCode: jest.fn(),
+        removePlaceholders: jest.fn(),
+        insertImagePlaceholder: jest.fn(),
+        existingContentToLink: () => false,
         props: {
           textareaId: 'fake_editor',
           tinymce: {
@@ -118,20 +123,54 @@ describe('Editor/Sidebar bridge', () => {
         })
       })
 
-      it('calls hideTray when necessary', () => {
+      it('calls hideTray after inserting a link', () => {
         const hideTray = jest.fn()
-        Bridge.attachController({hideTray})
+        Bridge.focusEditor({id: 'editor_id'})
+        Bridge.attachController({hideTray}, 'editor_id')
         Bridge.focusEditor(editor)
         Bridge.insertLink({})
         expect(hideTray).toHaveBeenCalledTimes(1)
       })
 
-      it("does not call hideTray when it shouldn't", () => {
-        const hideTray = jest.fn()
-        Bridge.attachController({hideTray})
+      it('inserts the placeholder when asked', () => {
         Bridge.focusEditor(editor)
-        Bridge.insertLink({}, false)
-        expect(hideTray).not.toHaveBeenCalled()
+        Bridge.insertImagePlaceholder({})
+        expect(Bridge.getEditor().insertImagePlaceholder).toHaveBeenCalled()
+      })
+
+      it('does not insert the placeholder if the user has selected text', () => {
+        editor.existingContentToLink = () => true
+        Bridge.focusEditor(editor)
+        Bridge.insertImagePlaceholder({})
+        expect(Bridge.getEditor().insertImagePlaceholder).not.toHaveBeenCalled()
+      })
+    })
+
+    describe('insertFileLink', () => {
+      it('inserts a link', () => {
+        const insertLinkSpy = jest.spyOn(Bridge, 'insertLink')
+        Bridge.insertFileLink({content_type: 'plain/text'})
+        expect(insertLinkSpy).toHaveBeenCalled()
+      })
+
+      it('embeds an image', () => {
+        const insertLinkSpy = jest.spyOn(Bridge, 'insertLink')
+        const insertImageSpy = jest.spyOn(Bridge, 'insertImage')
+        Bridge.insertFileLink({content_type: 'image/png'})
+        expect(insertLinkSpy).not.toHaveBeenCalled()
+        expect(insertImageSpy).toHaveBeenCalled()
+      })
+
+      it('embeds media', () => {
+        const insertLinkSpy = jest.spyOn(Bridge, 'insertLink')
+        const embedMediaSpy = jest.spyOn(Bridge, 'embedMedia')
+        Bridge.insertFileLink({content_type: 'video/mp4', href: 'here/i/am'})
+        expect(insertLinkSpy).not.toHaveBeenCalled()
+        expect(embedMediaSpy).toHaveBeenCalledWith({
+          content_type: 'video/mp4',
+          href: 'here/i/am',
+          embedded_iframe_url: 'here/i/am'
+        })
       })
     })
 
@@ -139,7 +178,7 @@ describe('Editor/Sidebar bridge', () => {
       let hideTray
       beforeEach(() => {
         hideTray = jest.fn()
-        Bridge.attachController({hideTray})
+        Bridge.attachController({hideTray}, 'editor_id')
         Bridge.focusEditor(editor)
       })
 
@@ -168,6 +207,37 @@ describe('Editor/Sidebar bridge', () => {
         const theCode = 'insert me'
         Bridge.insertEmbedCode(theCode)
         expect(editor.insertEmbedCode).toHaveBeenCalledWith(theCode)
+      })
+    })
+
+    describe('upload support', () => {
+      it('removes the placeholder', () => {
+        Bridge.focusEditor(editor)
+        Bridge.removePlaceholders('forfilename')
+        expect(editor.removePlaceholders).toHaveBeenCalledWith('forfilename')
+      })
+
+      it('shows an error message', () => {
+        Bridge.focusEditor(editor)
+        Bridge.showError('whoops')
+        expect(editor.addAlert).toHaveBeenCalledWith({
+          text: 'whoops',
+          type: 'error'
+        })
+      })
+    })
+
+    describe('get uploadMediaTranslations', () => {
+      it('requires mediaTranslations if it needs to', () => {
+        Bridge._uploadMediaTranslations = null
+        const umt = Bridge.uploadMediaTranslations
+        expect(umt).toBeDefined()
+      })
+
+      it('uses the cached value if available', () => {
+        Bridge._uploadMediaTranslations = {foo: 1}
+        const umt = Bridge.uploadMediaTranslations
+        expect(umt).toEqual({foo: 1})
       })
     })
   })

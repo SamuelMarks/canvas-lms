@@ -75,6 +75,17 @@ describe AppointmentGroup do
     end
   end
 
+  context 'broadcast_data' do
+    it 'should include course_id if the context is a course' do
+      course_with_student(:active_all => true)
+      group = AppointmentGroup.new(:title => "test")
+      group.contexts = [@course]
+      group.save!
+
+      expect(group.broadcast_data).to eql({root_account_id: @course.root_account_id, course_id: @course.id})
+    end
+  end
+
   context "add context" do
     let_once(:course1) { course_factory(active_all: true) }
 
@@ -188,6 +199,27 @@ describe AppointmentGroup do
       expect(@ag.appointments.size).to eql 3
       expect(@ag.start_at).to eql @ag.appointments.map(&:start_at).min
       expect(@ag.end_at).to eql @ag.appointments.map(&:end_at).max
+    end
+  end
+
+  context "update_appointments" do
+    before :each do
+      course_with_teacher_logged_in(:active_all => true)
+      @ag = AppointmentGroup.create!(
+          :title => "test",
+          :description => "hello",
+          :contexts => [@course],
+          :new_appointments => [['2012-01-01 12:00:00', '2012-01-01 13:00:00'],
+                                ['2012-01-01 13:00:00', '2012-01-01 14:00:00']]
+      )
+    end
+
+    it "should update the description for each event" do
+      new_desc = "new description 1234"
+      expect(@ag.update(:description => new_desc)).to be_truthy
+      expect(@ag.appointments.size).to be 2
+      expect(@ag.appointments.first.description).to eq new_desc
+      expect(@ag.appointments.last.description).to eq new_desc
     end
   end
 
@@ -374,8 +406,7 @@ describe AppointmentGroup do
       course_with_observer(active_all: true, active_cc: true, course: @course, associated_user_id: @student)
 
       [@teacher, @student].each do |user|
-        channel = user.communication_channels.create(:path => "test_channel_email_#{user.id}", :path_type => "email")
-        channel.confirm
+        communication_channel(user, {username: "test_channel_email_#{user.id}@test.com", active_cc: true})
       end
 
       @ag = AppointmentGroup.create!(:title => "test", :contexts => [@course], :new_appointments => [['2012-01-01 13:00:00', '2012-01-01 14:00:00']])
@@ -511,6 +542,11 @@ describe AppointmentGroup do
       expect(@ag.reload.available_slots).to eql 3
       enrollment2.conclude
       expect(@ag.reload.available_slots).to eql 4
+    end
+
+    it "should respect the current_only option" do
+      @ag.update(:new_appointments => [["#{Time.zone.now - 2.hour}", "#{Time.zone.now - 1.hour}"]])
+      expect(@ag.available_slots(current_only: true)).to eql 4
     end
   end
 

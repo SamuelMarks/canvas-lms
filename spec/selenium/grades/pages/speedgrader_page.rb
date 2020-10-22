@@ -83,10 +83,6 @@ class Speedgrader
       fxpath('//ul[@role = "menu"]//span[text() = "Keyboard Shortcuts"]')
     end
 
-    def mute_button
-      f('button#mute_link')
-    end
-
     def post_or_hide_grades_button
       fj('button[title="Post or Hide Grades"]:visible')
     end
@@ -97,6 +93,10 @@ class Speedgrader
 
     def post_grades_link
       fj("[role=menuitem]:contains('Post Grades'):visible")
+    end
+
+    def no_grades_to_post_button
+      fj("[role=menuitem]:contains('No Grades to Post'):visible")
     end
 
     def all_grades_posted_link
@@ -324,7 +324,7 @@ class Speedgrader
     def visit(course_id, assignment_id, timeout = 10)
       get "/courses/#{course_id}/gradebook/speed_grader?assignment_id=#{assignment_id}"
       visibility_check = grade_input
-      keep_trying_until(timeout) { visibility_check.displayed? }
+      wait_for(method: :visit, timeout: timeout) { visibility_check.displayed? }
     end
 
     def select_provisional_grade_by_label(label)
@@ -421,7 +421,7 @@ class Speedgrader
     end
 
     def select_rubric_criterion(criterion)
-      fj("span:contains('#{criterion}'):visible").click
+      ff(".rating-description").select { |elt| elt.displayed? && elt.text == criterion }[0].click
     end
 
     def clear_new_comment
@@ -550,7 +550,7 @@ class Speedgrader
     end
 
     def rating_by_text(rating_text)
-      fj("span:contains(\"#{rating_text}\")")
+      ff(".rating-description").select { |elt| elt.displayed? && elt.text == rating_text }[0]
     end
 
     def saved_rubric_ratings
@@ -558,7 +558,7 @@ class Speedgrader
     end
 
     def learning_outcome_points
-      f('.criterion_points input')
+      f('td[data-testid="criterion-points"] input')
     end
 
     def enter_rubric_points(points)
@@ -566,11 +566,11 @@ class Speedgrader
     end
 
     def rubric_criterion_points(index = 0)
-      ff('.criterion_points')[index]
+      ff('td[data-testid="criterion-points"]')[index]
     end
 
     def rubric_grade_input(criteria_id)
-      f("#criterion_#{criteria_id} td.criterion_points input")
+      f('#criterion_#{criteria_id} td[data-testid="criterion-points"] input')
     end
 
     def rubric_graded_points(index = 0)

@@ -88,20 +88,20 @@ FilesApp.render = function() {
           className="Button Button--link ic-app-course-nav-toggle"
           type="button"
           id="courseMenuToggle"
-          title={I18n.t('Show and hide courses menu')}
+          aria-label={I18n.t('Show and hide courses menu')}
           aria-hidden
         >
           <i className="icon-hamburger" aria-hidden="true" />
         </button>
+        <div className="ic-app-crumbs">
+          <Breadcrumbs
+            rootTillCurrentFolder={this.state.rootTillCurrentFolder}
+            showingSearchResults={this.state.showingSearchResults}
+            query={this.props.query}
+            contextAssetString={this.props.contextAssetString}
+          />
+        </div>
         <div className="TutorialToggleHolder" />
-      </div>
-      <div className="ic-app-crumbs">
-        <Breadcrumbs
-          rootTillCurrentFolder={this.state.rootTillCurrentFolder}
-          showingSearchResults={this.state.showingSearchResults}
-          query={this.props.query}
-          contextAssetString={this.props.contextAssetString}
-        />
       </div>
       <Toolbar
         currentFolder={this.state.currentFolder}
@@ -140,7 +140,12 @@ FilesApp.render = function() {
             }}
           />
         </aside>
-        <div className="ef-directory" role="region" aria-label={I18n.t('File List')}>
+        <div
+          className="ef-directory"
+          role="region"
+          aria-label={I18n.t('File List')}
+          ref={e => (this.filesDirectory = e)}
+        >
           {React.cloneElement(this.props.children, {
             key: this.state.key,
             pathname: this.props.pathname,
@@ -172,7 +177,8 @@ FilesApp.render = function() {
               onItemDragLeaveOrEnd: this.onItemDragLeaveOrEnd,
               onItemDrop: this.onItemDrop
             },
-            clearSelectedItems: this.clearSelectedItems
+            clearSelectedItems: this.clearSelectedItems,
+            filesDirectoryRef: this.filesDirectory
           })}
         </div>
       </div>

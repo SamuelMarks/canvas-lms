@@ -18,84 +18,23 @@
 
 module FeatureFlags
   module Hooks
-    def self.new_gradebook_custom_transition_hook(user, context, _from_state, transitions)
-      if context.is_a?(Course)
-        is_admin = context.account_membership_allows(user)
-        is_teacher = user.teacher_enrollments.active.where(course_id: context.id).exists?
-
-        if is_admin || is_teacher
-          should_lock = context.gradebook_backwards_incompatible_features_enabled?
-          transitions['off']['locked'] = should_lock if transitions&.dig('off')
-        else
-          transitions['on']['locked'] = true if transitions&.dig('on')
-          transitions['off']['locked'] = true if transitions&.dig('off')
-        end
-      elsif context.is_a?(Account)
-        backwards_incompatible_feature_flags =
-          FeatureFlag.where(feature: [:new_gradebook, :final_grades_override], state: :on)
-        all_active_sub_account_ids = Account.sub_account_ids_recursive(context.id)
-        relevant_accounts = Account.joins(:feature_flags).where(id: [context.id].concat(all_active_sub_account_ids))
-        relevant_courses = Course.joins(:feature_flags).where(account_id: all_active_sub_account_ids)
-
-        accounts_with_feature = relevant_accounts.merge(backwards_incompatible_feature_flags)
-        courses_with_feature = relevant_courses.merge(backwards_incompatible_feature_flags)
-
-        if accounts_with_feature.exists? || courses_with_feature.exists?
-          transitions['off'] ||= {}
-          transitions['off']['locked'] = true
-          transitions['off']['warning'] =
-            I18n.t("This feature can't be disabled because there is at least one sub-account or course with this feature enabled.")
-        end
-
-        if context.feature_enabled?(:final_grades_override)
-          # state is locked to `on`
-          transitions['off'] ||= {}
-          transitions['off']['locked'] = true
-          transitions['allowed'] ||= {}
-          transitions['allowed']['locked'] = true
-        elsif context.feature_allowed?(:final_grades_override, exclude_enabled: true)
-          # Lock `off` since Final Grade Override is set to `allowed`
-          transitions['off'] ||= {}
-          transitions['off']['locked'] = true
-        end
-      end
-    end
-
     def self.final_grades_override_custom_transition_hook(_user, context, from_state, transitions)
       transitions['off'] ||= {}
       transitions['on'] ||= {}
 
-      # The goal here is to make Final Grade Override fully dependent upon New Gradebook's status.
-      # In other words this is a "one-way" flag:
+      # This is a "one-way" flag:
       #  - Once Allowed, it can no longer be set to Off.
       #  - Once On, it can no longer be Off nor Allowed.
-      #  - For Final Grade Override to be set to `allowed`, New Gradebook must be at least `allowed` or `on`
-      #  - For Final Grade Override to be set to `on`, New Gradebook must be `on`.
       if context.is_a?(Course)
-        if context.feature_enabled?(:new_gradebook)
-          transitions['off']['locked'] = true if from_state == 'on' # lock off to enforce no take backs
-        else
-          transitions['on']['locked'] = true # feature unavailable without New Gradebook
-        end
+        transitions['off']['locked'] = true if from_state == 'on' # lock off to enforce no take backs
       elsif context.is_a?(Account)
         transitions['allowed'] ||= {}
-        if context.feature_enabled?(:new_gradebook)
-          if from_state == 'allowed'
-            transitions['off']['locked'] = true # lock off to enforce no take backs
-          elsif from_state == 'on'
-            # lock both `off` and `allowed` to enforce no take backs
-            transitions['off']['locked'] = true
-            transitions['allowed']['locked'] = true
-          end
-        elsif context.feature_allowed?(:new_gradebook, exclude_enabled: true)
-          # Locked into `allowed` since Final Grade Override can't go back to `off` and can't
-          # set to `on` without New Gradebook also set to `on`.
+        if from_state == 'allowed'
+          transitions['off']['locked'] = true # lock off to enforce no take backs
+        elsif from_state == 'on'
+          # lock both `off` and `allowed` to enforce no take backs
           transitions['off']['locked'] = true
-          transitions['on']['locked'] = true
-        else
-          # feature unavailable without New Gradebook
           transitions['allowed']['locked'] = true
-          transitions['on']['locked'] = true
         end
       end
     end
@@ -123,18 +62,60 @@ module FeatureFlags
       root_account.settings&.dig(:provision, 'lti').present?
     end
 
-    def self.conditional_release_after_state_change_hook(user, context, _old_state, new_state)
-      if %w(on allowed).include?(new_state) && context.is_a?(Account)
-        @service_account = ConditionalRelease::Setup.new(context.id, user.id)
-        @service_account.activate!
-      end
-    end
-
     def self.analytics_2_after_state_change_hook(_user, context, _old_state, _new_state)
       # if we clear the nav cache before HAStore clears, it can be recached with stale FF data
       nav_cache = Lti::NavigationCache.new(context.root_account)
       nav_cache.send_later_if_production_enqueue_args(:invalidate_cache_key, {run_at: 1.minute.from_now, max_attempts: 1})
-      nav_cache.send_later_if_production_enqueue_args(:invalidate_cache_key, {run_at: 5.minute.from_now, max_attempts: 1})
+      nav_cache.send_later_if_production_enqueue_args(:invalidate_cache_key, {run_at: 5.minutes.from_now, max_attempts: 1})
+    end
+
+    def self.k6_theme_hook(_user, _context, _from_state, transitions)
+      transitions['on'] ||= {}
+      transitions['on']['message'] =
+        I18n.t("Enabling the Elementary Theme will change the font in the Canvas interface and simplify "\
+        "the Course Navigation Menu for all users in your course.")
+      transitions['on']['reload_page'] = true
+      transitions['off'] ||= {}
+      transitions['off']['message'] =
+        I18n.t("Disabling the Elementary Theme will change the font in the Canvas interface for all users in your course.")
+      transitions['off']['reload_page'] = true
+    end
+
+    def self.conditional_release_transition_hook(_user, context, _from_state, transitions)
+      if context.is_a?(Course)
+        transitions['off'] ||= {}
+        transitions['off']['message'] =
+          I18n.t("Disabling the Mastery Paths feature will release configured assignments and content to all students.
+                  If the feature is re-enabled, these assignments will need to be configured for Mastery Paths again.")
+      end
+    end
+
+    def self.conditional_release_after_change_hook(_user, context, _old_state, new_state)
+      if context.is_a?(Course) && new_state == "off"
+        ConditionalRelease::Service.send_later_if_production_enqueue_args(
+          :release_mastery_paths_content_in_course,
+          {:priority => Delayed::LOW_PRIORITY, :n_strand => ["conditional_release_unassignment", context.global_root_account_id]},
+          context
+        )
+      end
+    end
+
+    def self.mastery_scales_after_change_hook(_user, context, _old_state, new_state)
+      if context.is_a?(Account) && OutcomesService::Service.enabled_in_context?(context)
+        OutcomesService::Service.send_later_if_production_enqueue_args(
+          :toggle_feature_flag,
+          {
+            priority: Delayed::LOW_PRIORITY,
+            n_strand: [
+              'outcomes_service_toggle_context_proficiencies_feature_flag',
+              context.global_root_account_id
+            ]
+          },
+          context.root_account,
+          'context_proficiencies',
+          new_state == 'on'
+        )
+      end
     end
   end
 end

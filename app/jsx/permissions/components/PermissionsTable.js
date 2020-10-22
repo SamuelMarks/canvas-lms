@@ -17,85 +17,98 @@
  */
 
 import I18n from 'i18n!permissions'
-import React, {Component} from 'react'
+import React, {Component, Fragment} from 'react'
 import {arrayOf, func} from 'prop-types'
 import {connect} from 'react-redux'
 import $ from 'jquery'
+import {maxBy} from 'lodash'
 // For screenreaderFlashMessageExclusive  Maybe there's a better way
 import 'compiled/jquery.rails_flash_notifications'
 
-import {Button, IconButton} from '@instructure/ui-buttons'
-import {Checkbox} from '@instructure/ui-checkbox'
-import {IconExpandSolid, IconExpandStartSolid} from '@instructure/ui-icons'
-
-import {ScreenReaderContent} from '@instructure/ui-a11y-content'
+import {Button, CondensedButton, IconButton} from '@instructure/ui-buttons'
+import {IconArrowOpenEndSolid, IconArrowOpenDownSolid} from '@instructure/ui-icons'
 import {Text} from '@instructure/ui-elements'
 import {Tooltip} from '@instructure/ui-overlays'
 import {View} from '@instructure/ui-layout'
 
 import actions from '../actions'
+import {GROUP_PERMISSION_DESCRIPTIONS} from '../templates'
 import {ConnectedPermissionButton} from './PermissionButton'
+import {ConnectedGranularCheckbox} from './GranularCheckbox'
 import propTypes from '../propTypes'
+
+const GRANULAR_PERMISSION_TAG = 'ic-permissions__grp-tag'
 
 export default class PermissionsTable extends Component {
   static propTypes = {
     roles: arrayOf(propTypes.role).isRequired,
-    modifyPermissions: func.isRequired,
     permissions: arrayOf(propTypes.permission).isRequired,
     setAndOpenRoleTray: func.isRequired,
     setAndOpenPermissionTray: func.isRequired
   }
 
-  state = {
-    expanded: {}
+  constructor(props) {
+    super(props)
+    this.state = {
+      expanded: {}
+    }
+    this.justExpanded = null
+    this.tableRef = React.createRef()
+  }
+
+  componentDidUpdate() {
+    if (this.justExpanded) {
+      this.fixVerticalScroll()
+      this.justExpanded = null
+    }
   }
 
   // just a heads up: these likely break in RTL. the best thing would be to
   // change the css so you don't manually have to scroll the table in JS but
   // if you do have to do this in JS, you need to use something like
-  // 'normalize-scroll-left' from npm (grep for where we use it in the graebook)
+  // 'normalize-scroll-left' from npm (grep for where we use it in the gradebook)
   // so that it works cross browser in RTL
-  fixScroll = (leftOffset, leftScroll) => {
+  fixHorizontalScroll = e => {
     if (!this.contentWrapper) return
     const sidebarWidth = 300
+    const leftScroll = this.contentWrapper.scrollLeft
+    const leftOffset = e.target.closest('td,th').offsetLeft
     if (leftOffset - sidebarWidth < leftScroll) {
       const newScroll = Math.max(0, leftScroll - sidebarWidth)
       this.contentWrapper.scrollLeft = newScroll
     }
   }
 
-  fixScrollButton = e => {
-    if (!this.contentWrapper) return
-    const leftOffset = e.target.offsetParent.offsetLeft
-    const leftScroll = this.contentWrapper.scrollLeft
-    this.fixScroll(leftOffset, leftScroll)
-  }
+  fixVerticalScroll = () => {
+    // All rows corrresponding to granular permissions will have a special
+    // class attached to them. Find the ones corresponding to the expand-o
+    // operation that JUST happened.
+    if (!this.tableRef.current) return
+    const newGranulars = this.tableRef.current.querySelectorAll(
+      `tr.${GRANULAR_PERMISSION_TAG}-${this.justExpanded}`
+    )
+    if (newGranulars.length === 0) return
 
-  fixScrollHeader = e => {
-    if (!this.contentWrapper) return
-    const leftOffset = e.target.offsetParent.offsetParent.offsetLeft
-    const leftScroll = this.contentWrapper.scrollLeft
-    this.fixScroll(leftOffset, leftScroll)
-  }
-
-  toggleExpanded(permission) {
-    this.setState(prevState => {
-      const expanded = {...prevState.expanded}
-      expanded[permission.permission_name] = !expanded[permission.permission_name]
-
-      const count = permission.granular_permissions.length
-      if (expanded[permission.permission_name]) {
-        $.screenReaderFlashMessage(I18n.t('%{count} rows added', {count}))
-      } else {
-        $.screenReaderFlashMessage(I18n.t('%{count} rows removed', {count}))
-      }
-
-      return {expanded}
-    })
+    // We now have the rows that were added as a result of expanding the group.
+    // Find the bottom-most one of those, and then if it is below the visible
+    // region of the scrolling div, scroll it into view.
+    // Note that we don't have to worry about scrolling in the other direction,
+    // because rows can only get added BELOW the group, so they can never be
+    // off the top of the scroll region when first created
+    const scrollToMe = maxBy(Array.from(newGranulars), 'offsetTop')
+    const scrollArea = scrollToMe.closest('div.ic-permissions__table-container')
+    const myBottom = scrollToMe.offsetTop + scrollToMe.offsetHeight
+    const scrollAreaBottom = scrollArea.scrollTop + scrollArea.clientHeight
+    if (myBottom > scrollAreaBottom)
+      scrollArea.scrollBy({
+        top: myBottom - scrollAreaBottom,
+        left: 0,
+        behavior: 'smooth'
+      })
   }
 
   openRoleTray(role) {
-    // TODO ideally (according to kendal) we should have this close the current
+    // TODO ideally (according to Kendall) we should have this close the current
     //      tray (an animation) before loading the new tray. I was hoping that
     //      calling hideTrays() here would be enough to do that, but it is
     //      alas not the case. The `Admin > People` page has an example of
@@ -105,76 +118,119 @@ export default class PermissionsTable extends Component {
 
   renderTopHeader() {
     return (
-      <tr className="ic-permissions__top-header">
-        <th scope="col" className="ic-permissions__corner-stone">
-          <span className="ic-permission-corner-text">
-            <Text weight="bold" size="small">
-              {I18n.t('Permissions')}
-            </Text>
-          </span>
-        </th>
-        {this.props.roles.map(role => (
-          <th
-            key={role.id}
-            scope="col"
-            aria-label={role.label}
-            className="ic-permissions__top-header__col-wrapper-th"
-          >
-            <div className="ic-permissions__top-header__col-wrapper">
-              <div
-                className="ic-permissions__header-content ic-permissions__header-content-col"
-                id={`ic-permissions__role-header-for-role-${role.id}`}
-              >
-                <Tooltip tip={role.label}>
-                  <Button
-                    id={`role_${role.id}`}
-                    variant="link"
-                    onClick={() => this.openRoleTray(role)}
-                    onFocus={this.fixScrollHeader}
-                    size="small"
-                    theme={{smallPadding: '0', smallHeight: 'normal'}}
-                  >
-                    {role.label}
-                  </Button>
-                </Tooltip>
-              </div>
-            </div>
+      <thead>
+        <tr className="ic-permissions__top-header">
+          <th scope="col" className="ic-permissions__corner-stone">
+            <span className="ic-permission-corner-text">
+              <Text weight="bold" size="small">
+                {I18n.t('Permissions')}
+              </Text>
+            </span>
           </th>
-        ))}
-      </tr>
+          {this.props.roles.map(role => (
+            <th
+              key={role.id}
+              scope="col"
+              aria-label={role.label}
+              className="ic-permissions__top-header__col-wrapper-th"
+            >
+              <div className="ic-permissions__top-header__col-wrapper">
+                <div
+                  className="ic-permissions__header-content ic-permissions__header-content-col"
+                  id={`ic-permissions__role-header-for-role-${role.id}`}
+                >
+                  <Tooltip tip={role.label}>
+                    <Button
+                      id={`role_${role.id}`}
+                      variant="link"
+                      onClick={() => this.openRoleTray(role)}
+                      onFocus={this.fixHorizontalScroll}
+                      size="small"
+                      theme={{smallPadding: '0', smallHeight: 'normal'}}
+                    >
+                      {role.label}
+                    </Button>
+                  </Tooltip>
+                </div>
+              </div>
+            </th>
+          ))}
+        </tr>
+      </thead>
     )
   }
 
   renderLeftHeader(perm) {
-    const expanded = this.state.expanded[perm.permission_name]
+    const isExpanded = this.state.expanded[perm.permission_name]
+    const ExpandIcon = isExpanded ? IconArrowOpenDownSolid : IconArrowOpenEndSolid
+    const name = perm.permission_name
+    const granulars = perm.granular_permissions
+    const hasGranulars = granulars?.length > 0
+    const isGranular = perm.granular_permission_group
+
+    const toggleExpanded = () => {
+      this.setState(prevState => {
+        // Need to make a copy to avoid mutating existing state
+        // eslint-disable-next-line prefer-object-spread
+        const expanded = Object.assign({}, prevState.expanded)
+        expanded[name] = !expanded[name]
+
+        const count = granulars.length
+        if (expanded[name]) {
+          $.screenReaderFlashMessage(I18n.t('%{count} rows added', {count}))
+        } else {
+          $.screenReaderFlashMessage(I18n.t('%{count} rows removed', {count}))
+        }
+
+        if (expanded[name]) this.justExpanded = name
+        return {expanded}
+      })
+    }
+
+    function renderGroupDescription() {
+      const description = GROUP_PERMISSION_DESCRIPTIONS[name]
+      if (typeof description !== 'function') return null
+
+      return [
+        <br key="group-description-br" />,
+        <Text key="group-description-text" weight="light" size="small">
+          {description()}
+        </Text>
+      ]
+    }
 
     return (
       <th scope="row" className="ic-permissions__main-left-header" aria-label={perm.label}>
         <div className="ic-permissions__left-header__col-wrapper">
           <div className="ic-permissions__header-content">
-            {perm.granular_permissions && (
+            {hasGranulars && (
               <IconButton
-                data-testid={`expand_${perm.permission_name}`}
-                onClick={() => this.toggleExpanded(perm)}
+                data-testid={`expand_${name}`}
+                margin="0 0 0 x-small"
+                withBorder={false}
+                size="small"
+                withBackground={false}
+                onClick={toggleExpanded}
                 screenReaderLabel={
-                  expanded
+                  isExpanded
                     ? I18n.t('Expand %{permission}', {permission: perm.label})
                     : I18n.t('Shrink %{permission}', {permission: perm.label})
                 }
-              >
-                {expanded ? <IconExpandSolid /> : <IconExpandStartSolid />}
-              </IconButton>
+                renderIcon={ExpandIcon}
+              />
             )}
+            {isGranular && <span style={{minWidth: '2.25rem'}} />}
             <View maxWidth="17rem" as="div" padding="small">
-              <Button
+              <CondensedButton
                 variant="link"
                 onClick={() => this.props.setAndOpenPermissionTray(perm)}
-                id={`permission_${perm.permission_name}`}
+                id={`permission_${name}`}
                 theme={{mediumPadding: '0', mediumHeight: 'normal'}}
                 fluidWidth
               >
                 {perm.label}
-              </Button>
+              </CondensedButton>
+              {hasGranulars && renderGroupDescription()}
             </View>
           </div>
         </div>
@@ -182,44 +238,22 @@ export default class PermissionsTable extends Component {
     )
   }
 
-  renderExapndedRows(perm) {
+  renderExpandedRows(perm) {
     return perm.granular_permissions.map(permission => (
-      <tr key={permission.label}>
-        <th scope="row" className="ic-permissions__left-header__expanded">
-          <div className="ic-permissions__left-header__col-wrapper">
-            <div className="ic-permissions__header-content">
-              <View maxWidth="17rem" as="div" padding="small">
-                <Button
-                  variant="link"
-                  onClick={() => this.props.setAndOpenPermissionTray(perm)}
-                  id={`permission_${permission.permission_name}`}
-                  theme={{mediumPadding: '0', mediumHeight: 'normal'}}
-                  fluidWidth
-                >
-                  {permission.label}
-                </Button>
-              </View>
-            </div>
-          </div>
-        </th>
+      <tr
+        key={permission.label}
+        className={`${GRANULAR_PERMISSION_TAG}-${permission.granular_permission_group}`}
+      >
+        {this.renderLeftHeader(permission)}
         {this.props.roles.map(role => (
           <td key={role.id}>
-            <div className="ic-permissions__cell-content">
-              <Checkbox
-                checked={role.permissions[permission.permission_name].enabled}
-                disabled={role.permissions[permission.permission_name].readonly}
-                label={<ScreenReaderContent>{permission.label}</ScreenReaderContent>}
-                onChange={() =>
-                  this.props.modifyPermissions({
-                    enabled: !role.permissions[permission.permission_name].enabled,
-                    explicit: true,
-                    id: role.id,
-                    name: permission.permission_name
-                  })
-                }
-                value={permission.label}
-              />
-            </div>
+            <ConnectedGranularCheckbox
+              permission={role.permissions[permission.permission_name]}
+              permissionName={permission.permission_name}
+              permissionLabel={permission.label}
+              roleId={role.id}
+              handleScroll={this.fixHorizontalScroll}
+            />
           </td>
         ))}
       </tr>
@@ -229,30 +263,32 @@ export default class PermissionsTable extends Component {
   renderTable() {
     return (
       <table className="ic-permissions__table">
-        <tbody>{this.renderTopHeader()}</tbody>
-        {this.props.permissions.map(perm => (
-          <tbody key={perm.permission_name}>
-            <tr>
-              {this.renderLeftHeader(perm)}
-              {this.props.roles.map(role => (
-                <td key={role.id} id={`${perm.permission_name}_role_${role.id}`}>
-                  <div className="ic-permissions__cell-content">
-                    <ConnectedPermissionButton
-                      permission={role.permissions[perm.permission_name]}
-                      permissionName={perm.permission_name}
-                      permissionLabel={perm.label}
-                      roleId={role.id}
-                      roleLabel={role.label}
-                      inTray={false}
-                      onFocus={this.fixScrollButton}
-                    />
-                  </div>
-                </td>
-              ))}
-            </tr>
-            {this.state.expanded[perm.permission_name] && this.renderExapndedRows(perm)}
-          </tbody>
-        ))}
+        {this.renderTopHeader()}
+        <tbody ref={this.tableRef}>
+          {this.props.permissions.map(perm => (
+            <Fragment key={perm.permission_name}>
+              <tr>
+                {this.renderLeftHeader(perm)}
+                {this.props.roles.map(role => (
+                  <td key={role.id} id={`${perm.permission_name}_role_${role.id}`}>
+                    <div className="ic-permissions__cell-content">
+                      <ConnectedPermissionButton
+                        permission={role.permissions[perm.permission_name]}
+                        permissionName={perm.permission_name}
+                        permissionLabel={perm.label}
+                        roleId={role.id}
+                        roleLabel={role.label}
+                        inTray={false}
+                        onFocus={this.fixHorizontalScroll}
+                      />
+                    </div>
+                  </td>
+                ))}
+              </tr>
+              {this.state.expanded[perm.permission_name] && this.renderExpandedRows(perm)}
+            </Fragment>
+          ))}
+        </tbody>
       </table>
     )
   }
@@ -275,7 +311,6 @@ function mapStateToProps(state, ownProps) {
 }
 
 const mapDispatchToProps = {
-  modifyPermissions: actions.modifyPermissions,
   setAndOpenRoleTray: actions.setAndOpenRoleTray,
   setAndOpenPermissionTray: actions.setAndOpenPermissionTray
 }

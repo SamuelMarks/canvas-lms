@@ -23,7 +23,7 @@ import ContentHeading from './ContentHeading'
 import ReceivedTable from './ReceivedTable'
 import PreviewModal from './PreviewModal'
 import {Text} from '@instructure/ui-text'
-import {Spinner} from '@instructure/ui-elements'
+import {Spinner} from '@instructure/ui-spinner'
 import useFetchApi from 'jsx/shared/effects/useFetchApi'
 import doFetchApi from 'jsx/shared/effects/doFetchApi'
 import Paginator from 'jsx/shared/components/Paginator'
@@ -172,7 +172,7 @@ export default function ReceivedContentView() {
         label={I18n.t('Import...')}
         open={whichModalOpen === 'import'}
         placement="end"
-        padding="0 medium"
+        padding="medium"
         onDismiss={closeModal}
       >
         <CourseImportPanel

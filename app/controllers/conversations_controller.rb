@@ -381,19 +381,19 @@ class ConversationsController < ApplicationController
 
       recipients_are_instructors = all_recipients_are_instructors?(context, @recipients)
 
-      if context.is_a?(Course) && !recipients_are_instructors && !context.grants_right?(@current_user, session, :send_messages)
+      if context.is_a?(Course) && !recipients_are_instructors && !observer_to_linked_students && !context.grants_right?(@current_user, session, :send_messages)
         return render_error("Unable to send messages to users in #{context.name}", '')
       elsif !valid_context?(context)
         return render_error('context_code', 'invalid')
       end
 
+      if context.is_a?(Course) && context.workflow_state == 'completed' && !context.grants_right?(@current_user, session, :read_as_admin)
+        return render_error('Course concluded', 'Unable to send messages')
+      end
+
       shard = context.shard
       context_type = context.class.name
       context_id = context.id
-    end
-
-    if context.is_a?(Course) && context.workflow_state != 'available'
-      return render_error('Course concluded', 'Unable to send messages')
     end
 
     params[:recipients].each do |recipient|
@@ -415,6 +415,7 @@ class ConversationsController < ApplicationController
     shard.activate do
       if batch_private_messages || batch_group_messages
         mode = params[:mode] == 'async' ? :async : :sync
+        message.relativize_attachment_ids(from_shard: message.shard, to_shard: shard)
         message.shard = shard
         batch = ConversationBatch.generate(message, @recipients, mode,
           subject: params[:subject], context_type: context_type,
@@ -585,7 +586,7 @@ class ConversationsController < ApplicationController
 
     @conversation.update_attribute(:workflow_state, "read") if @conversation.unread? && auto_mark_as_read?
     messages = nil
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       messages = @conversation.messages
       ActiveRecord::Associations::Preloader.new.preload(messages, :asset)
     end
@@ -880,6 +881,12 @@ class ConversationsController < ApplicationController
   #
   def add_message
     get_conversation(true)
+
+    context = @conversation.conversation.context
+    if context.is_a?(Course) && context.workflow_state == 'completed' && !context.grants_right?(@current_user, session, :read_as_admin)
+      return render json: {message: "Unable to send messages in a concluded course"}, status: :unauthorized
+    end
+
     if @conversation.conversation.replies_locked_for?(@current_user)
       return render_unauthorized_action
     end
@@ -1021,7 +1028,7 @@ class ConversationsController < ApplicationController
       f.updated = Time.now
       f.id = conversations_url
     end
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       @entries = []
       @conversation_contexts = {}
       @current_user.conversations.each do |conversation|
@@ -1088,7 +1095,7 @@ class ConversationsController < ApplicationController
       when 'unread'
         @current_user.conversations.unread
       when 'starred'
-        @current_user.conversations.starred
+        @current_user.starred_conversations
       when 'sent'
         @current_user.all_conversations.sent
       when 'archived'
@@ -1136,7 +1143,12 @@ class ConversationsController < ApplicationController
     end
 
     users, contexts = AddressBook.partition_recipients(params[:recipients])
-    known = @current_user.address_book.known_users(users, context: context, conversation_id: params[:from_conversation_id])
+    known = @current_user.address_book.known_users(
+      users,
+      context: context,
+      conversation_id: params[:from_conversation_id],
+      strict_checks: !Account.site_admin.grants_right?(@current_user, session, :send_messages)
+    )
     contexts.each{ |context| known.concat(@current_user.address_book.known_in_context(context)) }
     @recipients = known.uniq(&:id)
     @recipients.reject!{|u| u.id == @current_user.id} unless @recipients == [@current_user] && params[:recipients].count == 1
@@ -1243,5 +1255,16 @@ class ConversationsController < ApplicationController
     end
 
     false
+  end
+
+  def observer_to_linked_students
+    observee_ids = @current_user.enrollments.where(type: "ObserverEnrollment").distinct.pluck(:associated_user_id)
+    return false if observee_ids.empty?
+
+    @recipients.each do |recipient|
+      return false if observee_ids.exclude?(recipient.id)
+    end
+
+    true
   end
 end

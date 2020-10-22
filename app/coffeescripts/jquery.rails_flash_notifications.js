@@ -25,7 +25,6 @@ function initFlashContainer() {
   helper.initHolder()
   helper.initScreenreaderHolder()
 }
-initFlashContainer()
 
 // Pops up a small notification box at the top of the screen.
 $.flashMessage = function(content, timeout = 3000) {
@@ -60,7 +59,8 @@ $.initFlashContainer = () => initFlashContainer()
 function renderServerNotifications() {
   if (typeof ENV !== 'undefined' && ENV && ENV.notices) {
     ENV.notices.forEach(notice => {
-      helper.createNode(notice.type, notice.content, undefined, undefined, notice.classes)
+      const timeout = notice.content instanceof Object && notice.content.timeout
+      helper.createNode(notice.type, notice.content, timeout, undefined, notice.classes)
       createScreenreaderNodeWithDelay(notice.content, false)
     })
   }
@@ -70,6 +70,7 @@ function createScreenreaderNodeWithDelay(content, closable = true) {
   setTimeout(() => helper.createScreenreaderNode(content, closable), 100)
 }
 
+$(initFlashContainer)
 $(() => setTimeout(renderServerNotifications, 100))
 
 export default $

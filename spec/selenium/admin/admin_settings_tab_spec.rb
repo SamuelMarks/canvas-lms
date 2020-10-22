@@ -434,18 +434,51 @@ describe "admin settings tab" do
     end
 
     it "adds a custom link" do
+      Account.site_admin.enable_feature! :featured_help_links
       get "/accounts/#{Account.default.id}/settings"
       f('.HelpMenuOptions__Container button').click
       fj('[role="menuitemradio"] span:contains("Add Custom Link")').click
       replace_content fj('#custom_help_link_settings input[name$="[text]"]:visible'), 'text'
       replace_content fj('#custom_help_link_settings textarea[name$="[subtext]"]:visible'), 'subtext'
       replace_content fj('#custom_help_link_settings input[name$="[url]"]:visible'), 'https://url.example.com'
+      fj('#custom_help_link_settings fieldset .ic-Label:contains("Featured"):visible').click
       f('#custom_help_link_settings button[type="submit"]').click
       expect(fj('.ic-Sortable-item:first .ic-Sortable-item__Text')).to include_text('text')
       form = f('#account_settings')
       form.submit
       cl = Account.default.help_links.detect { |hl| hl['url'] == 'https://url.example.com' }
-      expect(cl).to include({"text"=>"text", "subtext"=>"subtext", "url"=>"https://url.example.com", "type"=>"custom", "available_to"=>["user", "student", "teacher", "admin", "observer", "unenrolled"]})
+      expect(cl).to include(
+        {
+          "text"=>"text",
+          "subtext"=>"subtext",
+          "url"=>"https://url.example.com",
+          "type"=>"custom",
+          "is_featured"=>true,
+          "is_new"=>false,
+          "available_to"=>["user", "student", "teacher", "admin", "observer", "unenrolled"]
+        }
+      )
+    end
+
+    it "adds a custom link with New designation" do
+      Account.site_admin.enable_feature! :featured_help_links
+      get "/accounts/#{Account.default.id}/settings"
+      f('.HelpMenuOptions__Container button').click
+      fj('[role="menuitemradio"] span:contains("Add Custom Link")').click
+      replace_content fj('#custom_help_link_settings input[name$="[text]"]:visible'), 'text'
+      replace_content fj('#custom_help_link_settings textarea[name$="[subtext]"]:visible'), 'subtext'
+      replace_content fj('#custom_help_link_settings input[name$="[url]"]:visible'), 'https://newurl.example.com'
+      fj('#custom_help_link_settings fieldset .ic-Label:contains("New"):visible').click
+      f('#custom_help_link_settings button[type="submit"]').click
+      form = f('#account_settings')
+      form.submit
+      cl = Account.default.help_links.detect { |hl| hl['url'] == 'https://newurl.example.com' }
+      expect(cl).to include(
+        {
+          "is_featured"=>false,
+          "is_new"=>true,
+        }
+      )
     end
 
     it "edits a custom link" do
@@ -548,7 +581,12 @@ describe "admin settings tab" do
 
     Feature.applicable_features(Account.site_admin).each do |feature|
       next if feature.visible_on && !feature.visible_on.call(Account.site_admin)
-      expect(f(".feature.#{feature.feature}")).to be_displayed
+      # We don't want flags that are enabled in code to appear in the UI
+      if feature.enabled?
+        expect(f(".feature")).to_not contain_jqcss(".#{feature.feature}")
+      else
+        expect(f(".feature.#{feature.feature}")).to be_displayed
+      end
     end
   end
 end

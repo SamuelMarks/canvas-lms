@@ -39,8 +39,7 @@ describe Lti::Messages::JwtMessage do
     JSON::JWT.decode(jws[:id_token], pub_key)
   end
   let(:pub_key) do
-    jwk = JSON::JWK.new(Lti::KeyStorage.retrieve_keys['jwk-present.json'])
-    jwk.to_key.public_key
+    Lti::KeyStorage.present_key.to_key.public_key
   end
   let_once(:course) do
     course_with_student
@@ -697,6 +696,14 @@ describe Lti::Messages::JwtMessage do
       before { tool.update!(workflow_state: 'name_only') }
 
       it_behaves_like 'skips role scope mentor'
+    end
+  end
+
+  describe 'legacy user id claims' do
+    it 'sets the "lti11_legacy_user_id" claim' do
+      expected = decoded_jwt['https://purl.imsglobal.org/spec/lti/claim/lti11_legacy_user_id']
+
+      expect(expected).to eq tool.opaque_identifier_for(user)
     end
   end
 end

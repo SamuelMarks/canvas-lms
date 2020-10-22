@@ -415,8 +415,8 @@ describe 'Submissions API', type: :request do
       expect(json['user_id']).to eq @student1.id
     end
 
-    it "does not show grades or hidden comments to students on muted assignments" do
-      @a1.mute!
+    it "does not show grades or hidden comments to students when grades have not posted" do
+      @a1.ensure_post_policy(post_manually: true)
       @a1.grade_student(@student1, grade: 5, grader: @teacher)
 
       @a1.update_submission(@student1, :hidden => false, :comment => "visible comment")
@@ -489,8 +489,8 @@ describe 'Submissions API', type: :request do
       end
     end
 
-    it "does not show rubric assessments to students on muted assignments" do
-      @a1.mute!
+    it "does not show rubric assessments to students when grades have not posted" do
+      @a1.ensure_post_policy(post_manually: true)
       sub = @a1.grade_student(@student1, grade: 5, grader: @teacher).first
 
       rubric = rubric_model(
@@ -783,6 +783,99 @@ describe 'Submissions API', type: :request do
     expect(comment_json['author_id']).to be_nil
     expect(comment_json['author_name']).to match(/Anonymous/)
     expect(comment_json['author']).to be_empty
+  end
+
+  it 'does not return submitter info when anonymous grading is on' do
+    submitter = student_in_course({ :active_all => true }).user
+
+    assignment = assignment_model(course: @course)
+    assignment.update_attribute(:anonymous_grading, true)
+    expect(assignment.reload.anonymous_grading?).to be_truthy
+
+    submission = assignment.submit_homework(submitter, body: "Anon Submission")
+    submission_comment = submission.add_comment({
+      author: submitter,
+      comment: "Anon Comment"
+    })
+
+    @user = teacher_in_course({ :active_all => true }).user
+    url = "/api/v1/courses/#{@course.id}/assignments/#{assignment.id}/submissions"
+    json = api_call(:get, url, {
+      :controller => 'submissions_api',
+      :action => 'index',
+      :format => 'json',
+      :course_id => @course.to_param,
+      :assignment_id => assignment.to_param
+    }, {
+      :include => %w(user, submission_comments)
+    })
+
+    expect(json.first['user']).to be_nil
+    comment_json = json.first['submission_comments'].first
+    expect(comment_json['author_id']).to be_nil
+    expect(comment_json['author_name']).to match(/Anonymous/)
+    expect(comment_json['author']).to be_empty
+  end
+
+  it "loads discussion entry data" do
+    @student = user_factory(active_all: true)
+    course_with_teacher(:active_all => true)
+    @course.enroll_student(@student).accept!
+    @context = @course
+    @assignment = factory_with_protected_attributes(@course.assignments, {:title => 'assignment1', :submission_types => 'discussion_topic', :discussion_topic => discussion_topic_model})
+
+    e1 = @topic.discussion_entries.create!(:message => 'main entry', :user => @user)
+    se1 = @topic.discussion_entries.create!(:message => 'sub 1', :user => @student, :parent_entry => e1)
+    @assignment.submit_homework(@student, :submission_type => 'discussion_topic')
+    se2 = @topic.discussion_entries.create!(:message => 'student 1', :user => @student)
+    @assignment.submit_homework(@student, :submission_type => 'discussion_topic')
+    @topic.discussion_entries.create!(:message => 'another entry', :user => @user)
+
+    json = api_call(:get,
+      "/api/v1/courses/#{@course.id}/students/submissions.json",
+      { :controller => 'submissions_api', :action => 'for_students',
+        :format => 'json', :course_id => @course.to_param },
+      { :student_ids => [@student.to_param] })
+    expect(json.first["discussion_entries"]).to be_present
+  end
+
+  it "loads quiz submission data" do
+    course_with_teacher(:active_all => true)
+    quiz_with_submission
+    @user = @teacher
+
+    #grouped
+    json = api_call(:get,
+      "/api/v1/courses/#{@course.id}/students/submissions.json",
+      { :controller => 'submissions_api', :action => 'for_students',
+        :format => 'json', :course_id => @course.to_param },
+      { :student_ids => [@student.to_param], :include => %w(submission_history), :grouped => 1 })
+    expect(json.first["submissions"].first["submission_history"]).to be_present
+
+    # ungrouped
+    json = api_call(:get,
+      "/api/v1/courses/#{@course.id}/students/submissions.json",
+      { :controller => 'submissions_api', :action => 'for_students',
+        :format => 'json', :course_id => @course.to_param },
+      { :student_ids => [@student.to_param], :include => %w(submission_history) })
+
+    expect(json.first["submission_history"]).to be_present
+  end
+
+  it "loads attachment data" do
+    @student = user_factory(active_all: true)
+    course_with_teacher(:active_all => true)
+    @course.enroll_student(@student).accept!
+    a1 = @course.assignments.create!(:title => 'assignment1', :grading_type => 'letter_grade', :points_possible => 15)
+    submit_homework(a1, @student) { |s| s.attachments = [attachment_model(:uploaded_data => stub_png_data, :content_type => 'image/png', :context => @student)] }
+
+    json = api_call(:get,
+      "/api/v1/courses/#{@course.id}/students/submissions.json",
+      { :controller => 'submissions_api', :action => 'for_students',
+        :format => 'json', :course_id => @course.to_param },
+      { :student_ids => [@student.to_param] })
+
+    expect(json.first["attachments"]).to be_present
   end
 
   it "returns comment id along with submission comments" do
@@ -1694,9 +1787,6 @@ describe 'Submissions API', type: :request do
       let(:student1_sub) { assignment.submissions.find_by(user: @student1) }
 
       before(:each) do
-        @course.root_account.enable_feature!(:allow_postable_submission_comments)
-        PostPolicy.enable_feature!
-        @course.enable_feature!(:new_gradebook)
         assignment.ensure_post_policy(post_manually: true)
       end
 
@@ -1712,16 +1802,6 @@ describe 'Submissions API', type: :request do
           },
           params
         ).first
-      end
-
-      it "is not included when allow_postable_submission_comments feature is not enabled" do
-        @course.root_account.disable_feature!(:allow_postable_submission_comments)
-        expect(student_json.fetch("submissions").first).not_to have_key "has_postable_comments"
-      end
-
-      it "is not included when Post Policies are not enabled" do
-        @course.disable_feature!(:new_gradebook)
-        expect(student_json.fetch("submissions").first).not_to have_key "has_postable_comments"
       end
 
       it "is not included when params[:grouped] is not present" do
@@ -2229,8 +2309,10 @@ describe 'Submissions API', type: :request do
       )
       @a2 = @course.assignments.create!(
         title: 'assignment2', grading_type: 'letter_grade',
-        points_possible: 25, muted: true
+        points_possible: 25
       )
+      @a1.unmute! # automatically post grades for assignment 1
+      @a2.ensure_post_policy(post_manually: true)
 
       @a1.grade_student(@student1, grader: @teacher, grade: 15)
       @a2.grade_student(@student1, grader: @teacher, grade: 5)
@@ -2522,6 +2604,10 @@ describe 'Submissions API', type: :request do
       @student3 = student_in_course(:active_all => true).user
       @assignment1 = @course.assignments.create! :title => 'assignment1', :grading_type => 'points', :points_possible => 15
       @assignment2 = @course.assignments.create! :title => 'assignment2', :grading_type => 'points', :points_possible => 25
+
+      @assignment1.unmute!
+      @assignment2.unmute!
+
       bare_submission_model @assignment1, @student1, grade: 15, grader_id: @teacher.id, score: 15
       bare_submission_model @assignment2, @student1, grade: 25, grader_id: @teacher.id, score: 25
       bare_submission_model @assignment1, @student2, grade: 10, grader_id: @teacher.id, score: 10
@@ -3499,70 +3585,54 @@ describe 'Submissions API', type: :request do
     expect(json['score']).to eq 12.9
   end
 
-  it "adds hidden comments if the assignment is muted" do
-    course_with_teacher(:active_all => true)
-    student    = user_factory(active_all: true)
-    assignment = @course.assignments.create!(:title => 'assignment')
-    assignment.update_attribute(:muted, true)
-    @user = @teacher
-    @course.enroll_student(student).accept!
-    submission = assignment.find_or_create_submission(student)
-    api_call(:put, "/api/v1/courses/#{@course.id}/assignments/#{assignment.id}/submissions/#{student.id}",
-      { :controller => 'submissions_api', :action => 'update', :format => 'json',
-        :course_id => @course.to_param, :assignment_id => assignment.to_param,
-        :user_id => student.to_param },
-      { :comment => { :text_comment => 'hidden comment' } })
+  it "hides comments when the assignment posts manually and submission is not posted" do
+    course = Course.create!
+    assignment = course.assignments.create!
+    student = course.enroll_student(User.create!, enrollment_state: :active).user
+    teacher = course.enroll_teacher(User.create!, enrollment_state: :active).user
+    submission = assignment.submissions.find_by!(user: student)
+    @user = teacher
+
+    assignment.ensure_post_policy(post_manually: true)
+    api_call(
+      :put,
+      "/api/v1/courses/#{course.id}/assignments/#{assignment.id}/submissions/#{student.id}",
+      {
+        controller: "submissions_api",
+        action: "update",
+        format: "json",
+        course_id: course.to_param,
+        assignment_id: assignment.to_param,
+        user_id: student.to_param
+      },
+      { comment: { text_comment: "a comment!" } }
+    )
     expect(submission.submission_comments.order("id DESC").first).to be_hidden
   end
 
-  context "with post policies enabled" do
-    let_once(:course) { Course.create! }
-    let_once(:assignment) { course.assignments.create! }
-    let_once(:student) { course.enroll_student(User.create!, enrollment_state: :active).user }
-    let_once(:teacher) { course.enroll_teacher(User.create!, enrollment_state: :active).user }
-    let_once(:submission) { assignment.submissions.find_by!(user: student) }
+  it "does not hide comments when the submission is already posted" do
+    course = Course.create!
+    assignment = course.assignments.create!
+    student = course.enroll_student(User.create!, enrollment_state: :active).user
+    teacher = course.enroll_teacher(User.create!, enrollment_state: :active).user
+    submission = assignment.submissions.find_by!(user: student)
+    @user = teacher
 
-    before(:once) do
-      PostPolicy.enable_feature!
-      course.enable_feature!(:new_gradebook)
-      @user = teacher
-    end
-
-    it "hides comments when the assignment posts manually and submission is not posted" do
-      assignment.ensure_post_policy(post_manually: true)
-      api_call(
-        :put,
-        "/api/v1/courses/#{course.id}/assignments/#{assignment.id}/submissions/#{student.id}",
-        {
-          controller: "submissions_api",
-          action: "update",
-          format: "json",
-          course_id: course.to_param,
-          assignment_id: assignment.to_param,
-          user_id: student.to_param
-        },
-        { comment: { text_comment: "a comment!" } }
-      )
-      expect(submission.submission_comments.order("id DESC").first).to be_hidden
-    end
-
-    it "does not hide comments when the submission is already posted" do
-      submission.update!(posted_at: Time.zone.now)
-      api_call(
-        :put,
-        "/api/v1/courses/#{course.id}/assignments/#{assignment.id}/submissions/#{student.id}",
-        {
-          controller: "submissions_api",
-          action: "update",
-          format: "json",
-          course_id: course.to_param,
-          assignment_id: assignment.to_param,
-          user_id: student.to_param
-        },
-        { comment: { text_comment: "a comment!" } }
-      )
-      expect(submission.submission_comments.order("id DESC").first).not_to be_hidden
-    end
+    submission.update!(posted_at: Time.zone.now)
+    api_call(
+      :put,
+      "/api/v1/courses/#{course.id}/assignments/#{assignment.id}/submissions/#{student.id}",
+      {
+        controller: "submissions_api",
+        action: "update",
+        format: "json",
+        course_id: course.to_param,
+        assignment_id: assignment.to_param,
+        user_id: student.to_param
+      },
+      { comment: { text_comment: "a comment!" } }
+    )
+    expect(submission.submission_comments.order("id DESC").first).not_to be_hidden
   end
 
   it "does not hide student comments on muted assignments" do
@@ -4158,7 +4228,7 @@ describe 'Submissions API', type: :request do
         })
       end
 
-      it "copys files to the submissions folder if they're not there already" do
+      it "copies files to the submissions folder if they're not there already" do
         @assignment.update(:submission_types => 'online_upload')
         a1 = attachment_model(:context => @user, :folder => @user.submissions_folder)
         a2 = attachment_model(:context => @user)
@@ -4496,7 +4566,7 @@ describe 'Submissions API', type: :request do
     expect(json[0]["attachments"][0]["canvadoc_document_id"]).to eq canvadoc_document_id
   end
 
-  it "includes crocodoc whitelist ids in the preview url for attachments" do
+  it "includes crocodoc allowed ids in the preview url for attachments" do
     allow(Canvas::Crocodoc).to receive(:config).and_return({a: 1})
 
     course_with_teacher_logged_in active_all: true
@@ -4531,8 +4601,8 @@ describe 'Submissions API', type: :request do
     parsed_blob = JSON.parse parsed_params["blob"].first
     expect(parsed.path).to eq "/api/v1/crocodoc_session"
 
-    expect(parsed_blob["moderated_grading_whitelist"]).to include(@student.moderated_grading_ids.as_json)
-    expect(parsed_blob["moderated_grading_whitelist"]).to include(@teacher.moderated_grading_ids.as_json)
+    expect(parsed_blob["moderated_grading_allow_list"]).to include(@student.moderated_grading_ids.as_json)
+    expect(parsed_blob["moderated_grading_allow_list"]).to include(@teacher.moderated_grading_ids.as_json)
   end
 
 

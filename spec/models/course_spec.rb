@@ -228,8 +228,6 @@ describe Course do
   describe "#allow_final_grade_override?" do
     before :once do
       @course = Account.default.courses.create!
-      @course.root_account.enable_feature!(:new_gradebook)
-      @course.enable_feature!(:new_gradebook)
     end
 
     before :each do
@@ -252,26 +250,76 @@ describe Course do
     end
   end
 
+  describe "#hide_sections_on_course_users_page?" do
+    context "FF is On" do
+      before :once do
+        course_with_student
+        @course.root_account.enable_feature!(:hide_course_sections_from_students)
+      end
+
+      context "Setting is set to On" do
+        before :each do
+          @course.update!(:hide_sections_on_course_users_page => true)
+        end
+
+        it "returns true when there is more than one section" do
+          @course.course_sections.create!
+          expect(@course.sections_hidden_on_roster_page?(current_user: @user)).to be true
+        end
+
+        it "returns false when there is only one section" do
+          expect(@course.sections_hidden_on_roster_page?(current_user: @user)).to be false
+        end
+
+        it "returns false when the user has at least one non-student enrollment" do
+          teacher = User.create!
+          @course.enroll_teacher(teacher, enrollment_state: :active)
+          @course.enroll_student(teacher, enrollment_state: :active)
+          expect(@course.sections_hidden_on_roster_page?(current_user: teacher)).to be false
+        end
+
+        it "returns false when the user has no enrollments (like an admin)" do
+          admin = account_admin_user
+          expect(@course.sections_hidden_on_roster_page?(current_user: admin)).to be false
+        end
+      end
+
+      context "Setting is set to Off" do
+        before :each do
+          @course.update!(:hide_sections_on_course_users_page => false)
+        end
+
+        it "returns false" do
+          expect(@course.sections_hidden_on_roster_page?(current_user: @user)).to be false
+        end
+      end
+    end
+
+    context "FF is off" do
+      before :once do
+        course_with_student
+        @course.root_account.disable_feature!(:hide_course_sections_from_students)
+      end
+
+      it "returns false" do
+        expect(@course.sections_hidden_on_roster_page?(current_user: @user)).to be false
+      end
+    end
+  end
+
   describe "#filter_speed_grader_by_student_group?" do
     before :once do
       @course = Account.default.courses.create!
-      @course.root_account.enable_feature!(:new_gradebook)
-      @course.enable_feature!(:new_gradebook)
       @course.root_account.enable_feature!(:filter_speed_grader_by_student_group)
       @course.filter_speed_grader_by_student_group = true
     end
 
-    it "returns true when new gradebook is enabled and the setting is on" do
+    it "returns true when the setting is on" do
       expect(@course).to be_filter_speed_grader_by_student_group
     end
 
     it "returns false when setting is off" do
       @course.filter_speed_grader_by_student_group = false
-      expect(@course).not_to be_filter_speed_grader_by_student_group
-    end
-
-    it "returns false when new gradebook is disabled" do
-      @course.disable_feature!(:new_gradebook)
       expect(@course).not_to be_filter_speed_grader_by_student_group
     end
 
@@ -297,10 +345,11 @@ describe Course do
       @course.recompute_student_scores
     end
 
-    it "should not use student ids for deleted enrollments, even if they are explicitly passed" do
+    it "recomputes nothing if no students are visible" do
       @course.save!
       enrollment = course_with_student(course: @course, active_all: true)
       enrollment.destroy
+      3.times{ enrollment_model(workflow_state: 'registered', course: @course, user: user_model) }
       expect(Enrollment).to receive(:recompute_final_score).with([], any_args)
       @course.recompute_student_scores([enrollment.user_id])
     end
@@ -368,7 +417,6 @@ describe Course do
 
     @course.update_attribute(:public_syllabus, true)
     expect(@course.syllabus_visibility_option).to eq('public')
-
   end
 
   it 'should return offline web export flag' do
@@ -706,6 +754,13 @@ describe Course do
     expect(code).to_not eql(@course.course_code)
   end
 
+  it "should remove carriage returns from the name" do
+    @course = Course.create_unique
+    @course.name = "Hello\r\nWorld"
+    @course.save
+    expect(@course.name).to eql("Hello\nWorld")
+  end
+
   it "should throw error for long sis id" do
     #should throw rails validation error instead of db invalid statement error
     @course = Course.create_unique
@@ -960,8 +1015,17 @@ describe Course do
         expect(c.grants_right?(@teacher, :read)).to be_truthy
       end
 
+      it "should grant read_rubric to date-completed teacher" do
+        make_date_completed
+        expect(c.grants_right?(@teacher, :read_rubrics)).to be_truthy
+      end
+
       it "should grant :read_outcomes to teachers in the course" do
         expect(c.grants_right?(@teacher, :read_outcomes)).to be_truthy
+      end
+
+      it "should grant :read_rubric to teachers in the course" do
+        expect(c.grants_right?(@teacher, :read_rubrics)).to be_truthy
       end
     end
 
@@ -1304,22 +1368,13 @@ describe Course do
   describe "#post_manually?" do
     let_once(:course) { Course.create! }
 
-    context "when post policies are enabled" do
-      before(:once) { course.enable_feature!(:new_gradebook) }
-      before(:once) { PostPolicy.enable_feature! }
-
-      it "returns true if a policy with manual posting is attached to the course" do
-        course.default_post_policy.update!(post_manually: true)
-        expect(course).to be_post_manually
-      end
-
-      it "returns false if a policy without manual posting is attached to the course" do
-        course.default_post_policy.update!(post_manually: false)
-        expect(course).not_to be_post_manually
-      end
+    it "returns true if a policy with manual posting is attached to the course" do
+      course.default_post_policy.update!(post_manually: true)
+      expect(course).to be_post_manually
     end
 
-    it "returns false when post policies are not enabled" do
+    it "returns false if a policy without manual posting is attached to the course" do
+      course.default_post_policy.update!(post_manually: false)
       expect(course).not_to be_post_manually
     end
   end
@@ -1327,66 +1382,61 @@ describe Course do
   describe "#apply_post_policy!" do
     let_once(:course) { Course.create! }
 
-    context "when post policies are enabled" do
-      before(:once) { course.enable_feature!(:new_gradebook) }
-      before(:once) { PostPolicy.enable_feature! }
+    it "sets the post policy for the course" do
+      course.apply_post_policy!(post_manually: true)
+      expect(course.reload).to be_post_manually
+    end
 
-      it "sets the post policy for the course" do
+    it "explicitly sets a post policy for assignments without one" do
+      assignment = course.assignments.create!
+
+      course.apply_post_policy!(post_manually: true)
+      expect(assignment.reload.post_policy).to be_post_manually
+    end
+
+    it "updates the post policy for assignments with an existing-but-different policy" do
+      assignment = course.assignments.create!
+      assignment.ensure_post_policy(post_manually: false)
+
+      course.apply_post_policy!(post_manually: true)
+      expect(assignment.reload.post_policy).to be_post_manually
+    end
+
+    it "does not update assignments that have an equivalent post policy" do
+      assignment = course.assignments.create!
+      assignment.ensure_post_policy(post_manually: true)
+
+      expect {
         course.apply_post_policy!(post_manually: true)
-        expect(course.reload).to be_post_manually
-      end
+      }.not_to change {
+        PostPolicy.find_by!(assignment: assignment).updated_at
+      }
+    end
 
-      it "explicitly sets a post policy for assignments without one" do
-        assignment = course.assignments.create!
+    it "does not change the post policy for anonymous assignments" do
+      course.apply_post_policy!(post_manually: true)
+      anonymous_assignment = course.assignments.create!(anonymous_grading: true)
 
-        course.apply_post_policy!(post_manually: true)
-        expect(assignment.reload.post_policy).to be_post_manually
-      end
+      expect {
+        course.apply_post_policy!(post_manually: false)
+      }.not_to change {
+        PostPolicy.find_by!(assignment: anonymous_assignment).post_manually
+      }
+    end
 
-      it "updates the post policy for assignments with an existing-but-different policy" do
-        assignment = course.assignments.create!
-        assignment.ensure_post_policy(post_manually: false)
+    it "does not change the post policy for moderated assignments" do
+      course.apply_post_policy!(post_manually: true)
+      moderated_assignment = course.assignments.create!(
+        final_grader: course.enroll_teacher(User.create!, enrollment_state: :active).user,
+        grader_count: 2,
+        moderated_grading: true
+      )
 
-        course.apply_post_policy!(post_manually: true)
-        expect(assignment.reload.post_policy).to be_post_manually
-      end
-
-      it "does not update assignments that have an equivalent post policy" do
-        assignment = course.assignments.create!
-        assignment.ensure_post_policy(post_manually: true)
-
-        expect {
-          course.apply_post_policy!(post_manually: true)
-        }.not_to change {
-          PostPolicy.find_by!(assignment: assignment).updated_at
-        }
-      end
-
-      it "does not change the post policy for anonymous assignments" do
-        course.apply_post_policy!(post_manually: true)
-        anonymous_assignment = course.assignments.create!(anonymous_grading: true)
-
-        expect {
-          course.apply_post_policy!(post_manually: false)
-        }.not_to change {
-          PostPolicy.find_by!(assignment: anonymous_assignment).post_manually
-        }
-      end
-
-      it "does not change the post policy for moderated assignments" do
-        course.apply_post_policy!(post_manually: true)
-        moderated_assignment = course.assignments.create!(
-          final_grader: course.enroll_teacher(User.create!, enrollment_state: :active).user,
-          grader_count: 2,
-          moderated_grading: true
-        )
-
-        expect {
-          course.apply_post_policy!(post_manually: false)
-        }.not_to change {
-          PostPolicy.find_by(assignment: moderated_assignment).post_manually
-        }
-      end
+      expect {
+        course.apply_post_policy!(post_manually: false)
+      }.not_to change {
+        PostPolicy.find_by(assignment: moderated_assignment).post_manually
+      }
     end
   end
 
@@ -1412,20 +1462,8 @@ describe Course do
   describe "#post_policies_enabled?" do
     let_once(:course) { Course.create! }
 
-    it "returns true when both post policies and new gradebook are enabled" do
-      PostPolicy.enable_feature!
-      course.enable_feature!(:new_gradebook)
+    it "returns true" do
       expect(course).to be_post_policies_enabled
-    end
-
-    it "returns false when post policies is enabled but new gradebook is not enabled" do
-      PostPolicy.enable_feature!
-      expect(course).not_to be_post_policies_enabled
-    end
-
-    it "returns false when post policies is not enabled" do
-      course.enable_feature!(:new_gradebook)
-      expect(course).not_to be_post_policies_enabled
     end
   end
 end
@@ -1545,6 +1583,119 @@ describe Course do
     it "returns none for a nobody" do
       worthless_loser = User.create(:name => "Worthless Loser")
       expect(@course.course_section_visibility(worthless_loser)).to eq []
+    end
+  end
+
+  context 'resolved_outcome_proficiency' do
+    it "retrieves account's outcome proficiency" do
+      course_model
+      method = outcome_proficiency_model(@course.root_account)
+      expect(@course.resolved_outcome_proficiency).to eq method
+    end
+
+    it "can retrieve own proficiency" do
+      root_account = Account.create!
+      outcome_proficiency_model(root_account)
+      course = course_model(account: root_account)
+      course_method = outcome_proficiency_model(course)
+      expect(course.outcome_proficiency).to eq course_method
+      expect(course.resolved_outcome_proficiency).to eq course_method
+    end
+
+    it "can retrieve ancestor account's proficiency" do
+      root_account = Account.create!
+      root_method = outcome_proficiency_model(root_account)
+      subaccount = root_account.sub_accounts.create!
+      course = course_model(account: subaccount)
+      expect(course.outcome_proficiency).to eq nil
+      expect(course.resolved_outcome_proficiency).to eq root_method
+    end
+
+    it "ignores soft deleted proficiencies" do
+      root_account = Account.create!
+      account_method = outcome_proficiency_model(root_account)
+      course = course_model(account: root_account)
+      course_method = outcome_proficiency_model(course)
+      course_method.destroy
+      expect(course.outcome_proficiency).to eq course_method
+      expect(course.resolved_outcome_proficiency).to eq account_method
+    end
+
+    context "with the account_level_mastery_scales FF enabled" do
+      it "returns the account default if no record exists" do
+        root_account = Account.create!
+        root_account.enable_feature!(:account_level_mastery_scales)
+        course = course_model(account: root_account)
+        expect(course.outcome_proficiency).to eq nil
+        expect(course.resolved_outcome_proficiency).to eq OutcomeProficiency.find_or_create_default!(root_account)
+      end
+    end
+
+    context "with the account_level_mastery_scales FF disabled" do
+      it "returns nil if no record exists" do
+        root_account = Account.create!
+        root_account.disable_feature!(:account_level_mastery_scales)
+        course = course_model(account: root_account)
+        expect(course.outcome_proficiency).to eq nil
+        expect(course.resolved_outcome_proficiency).to eq nil
+      end
+    end
+  end
+
+  context 'resolved_outcome_calculation_method' do
+    it "retrieves account's outcome calculation method" do
+      root_account = Account.create!
+      method = OutcomeCalculationMethod.create! context: root_account, calculation_method: :highest
+      course = course_model(account: root_account)
+      expect(course.outcome_calculation_method).to eq nil
+      expect(course.resolved_outcome_calculation_method).to eq method
+    end
+
+    it "can retrieve ancestor account's outcome calculation method" do
+      root_account = Account.create!
+      subaccount = root_account.sub_accounts.create!
+      method = OutcomeCalculationMethod.create! context: root_account, calculation_method: :highest
+      course = course_model(account: subaccount)
+      expect(course.outcome_calculation_method).to eq nil
+      expect(course.resolved_outcome_calculation_method).to eq method
+    end
+
+    it "can retrieve own outcome calculation method" do
+      root_account = Account.create!
+      OutcomeCalculationMethod.create! context: root_account, calculation_method: :highest
+      course = course_model(account: root_account)
+      course_method = OutcomeCalculationMethod.create! context: course, calculation_method: :latest
+      expect(course.outcome_calculation_method).to eq course_method
+      expect(course.resolved_outcome_calculation_method).to eq course_method
+    end
+
+    it "ignores soft deleted calculation methods" do
+      root_account = Account.create!
+      account_method = OutcomeCalculationMethod.create! context: root_account, calculation_method: :highest
+      course = course_model(account: root_account)
+      course_method = OutcomeCalculationMethod.create! context: course, calculation_method: :latest, workflow_state: :deleted
+      expect(course.outcome_calculation_method).to eq course_method
+      expect(course.resolved_outcome_calculation_method).to eq account_method
+    end
+
+    context "with the account_level_mastery_scales FF enabled" do
+      it "returns the account default if no record exists" do
+        root_account = Account.create!
+        root_account.enable_feature!(:account_level_mastery_scales)
+        course = course_model(account: root_account)
+        expect(course.outcome_calculation_method).to eq nil
+        expect(course.resolved_outcome_calculation_method).to eq OutcomeCalculationMethod.find_or_create_default!(root_account)
+      end
+    end
+
+    context "with the account_level_mastery_scales FF disabled" do
+      it "returns nil if no record exists" do
+        root_account = Account.create!
+        root_account.disable_feature!(:account_level_mastery_scales)
+        course = course_model(account: root_account)
+        expect(course.outcome_calculation_method).to eq nil
+        expect(course.resolved_outcome_calculation_method).to eq nil
+      end
     end
   end
 end
@@ -1697,7 +1848,11 @@ describe Course, "enroll" do
     @course.enroll_student(@user)
     scope = account.associated_courses.active.select([:id, :name]).eager_load(:teachers).joins(:teachers).where(:enrollments => { :workflow_state => 'active' })
     sql = scope.to_sql
-    expect(sql).to match(/"enrollments"\."type" IN \('TeacherEnrollment'\)/)
+    if CANVAS_RAILS5_2
+      expect(sql).to match(/"enrollments"\."type" IN \('TeacherEnrollment'\)/)
+    else
+      expect(sql).to match(/"enrollments"\."type" = 'TeacherEnrollment'/)
+    end
   end
 end
 
@@ -1899,17 +2054,7 @@ describe Course, "gradebook_to_csv" do
       test_student_enrollment.save!
     end
 
-    it "should alphabetize by sortable name with the test student at the end" do
-      csv = GradebookExporter.new(@course, @teacher).to_csv
-      rows = CSV.parse(csv)
-      expect([rows[2][0],
-       rows[3][0],
-       rows[4][0],
-       rows[5][0]]).to eq ["Zed Zed", "Aardvark Aardvark", "Ned Ned", "Test Student"]
-    end
-
-    it "can show students by sortable name" do
-      @course.enable_feature! :gradebook_list_students_by_sortable_name
+    it "alphabetizes by sortable name with the test student at the end" do
       csv = GradebookExporter.new(@course, @teacher).to_csv
       rows = CSV.parse(csv)
       expect([rows[2][0],
@@ -2154,7 +2299,7 @@ describe Course, "gradebook_to_csv" do
     expect(rows.length).to eq 4
   end
 
-  it "should include muted if any assignments are muted" do
+  it "should include manual posting if any assignments are manually-posted" do
       course_factory(active_all: true)
       @user1 = user_with_pseudonym(:active_all => true, :name => 'Brian', :username => 'brianp@instructure.com')
       student_in_course(:user => @user1)
@@ -2166,12 +2311,12 @@ describe Course, "gradebook_to_csv" do
       @user1.pseudonym.save!
       @group = @course.assignment_groups.create!(:name => "Some Assignment Group", :group_weight => 100)
       @assignment = @course.assignments.create!(:title => "Some Assignment", :points_possible => 10, :assignment_group => @group)
-      @assignment.muted = true
-      @assignment.save!
+      @assignment.ensure_post_policy(post_manually: true)
       @assignment.grade_student(@user1, grade: "10", grader: @teacher)
       @assignment.grade_student(@user2, grade: "9", grader: @teacher)
       @assignment.grade_student(@user3, grade: "9", grader: @teacher)
       @assignment2 = @course.assignments.create!(:title => "Some Assignment 2", :points_possible => 10, :assignment_group => @group)
+      @assignment2.ensure_post_policy(post_manually: false)
       @course.recompute_student_scores
       @course.reload
 
@@ -2184,7 +2329,7 @@ describe Course, "gradebook_to_csv" do
       expect(rows[0][3]).to eq 'SIS Login ID'
       expect(rows[0][4]).to eq 'Section'
       expect(rows[1][0]).to eq nil
-      expect(rows[1][5]).to eq 'Muted'
+      expect(rows[1][5]).to eq 'Manual Posting'
       expect(rows[1][6]).to eq nil
       expect(rows[2][2]).to eq nil
       expect(rows[2][3]).to eq nil
@@ -2354,6 +2499,22 @@ describe Course, "tabs_available" do
       expect(tab_ids.length).to eql(length)
     end
 
+    it "should return K-6 tabs if feature flag is enabled for teachers" do
+      begin
+        @course.enable_feature!(:canvas_k6_theme)
+        tabs = @course.tabs_available(@user)
+        expect(tabs.count {|t| !t[:hidden] }).to eq 5
+        expect(tabs.count {|t| t[:hidden] }).to eq 12
+      ensure
+        @course.disable_feature!(:canvas_k6_theme)
+      end
+    end
+
+    it "should default tab configuration to an empty array" do
+      course = Course.new
+      expect(course.tab_configuration).to eq []
+    end
+
     it "should overwrite the order of tabs if configured" do
       @course.tab_configuration = [{ id: Course::TAB_COLLABORATIONS }]
       available_tabs = @course.tabs_available(@user).map { |tab| tab[:id] }
@@ -2362,6 +2523,12 @@ describe Course, "tabs_available" do
 
       expect(available_tabs).to        eq (custom_tabs + default_tabs).uniq
       expect(available_tabs.length).to eq default_tabs.length
+    end
+
+    it "should not blow up if somehow nils got in there" do
+      course = Course.new
+      course.tab_configuration = [{'id' => 1}, nil]
+      expect(course.tab_configuration).to eq [{'id' => 1}]
     end
 
     it "should not omit the target attribute for an external tool tab that is part of the tab configuration list" do
@@ -2423,6 +2590,16 @@ describe Course, "tabs_available" do
   context "students" do
     before :once do
       course_with_student(:active_all => true)
+    end
+
+    it "should return K-6 tabs if feature flag is enabled for students" do
+      begin
+        @course.enable_feature!(:canvas_k6_theme)
+        tab_ids = @course.tabs_available(@user).map{|t| t[:id] }
+        expect(tab_ids).to eq [Course::TAB_HOME, Course::TAB_GRADES]
+      ensure
+        @course.disable_feature!(:canvas_k6_theme)
+      end
     end
 
     it "should hide unused tabs if not an admin" do
@@ -4030,7 +4207,30 @@ describe Course, 'tabs_available' do
     tabs = @course.external_tool_tabs({}, User.new)
     expect(tabs.map{|t| t[:id]}).to include(tool.asset_string)
   end
+end
 
+describe Course, 'tab_hidden?' do
+  before :once do
+    course_model
+  end
+
+  it "should not have any hidden tabs by default" do
+    Course.default_tabs.each do |tab|
+      expect(@course.tab_hidden?(tab[:id])).to be_falsey
+    end
+  end
+
+  it "should hide certain tabs when canvas_k6_theme feature flag is enabled" do
+    begin
+      @course.enable_feature!(:canvas_k6_theme)
+      Course.default_tabs.each do |tab|
+        hidden = !Course::CANVAS_K6_TAB_IDS.include?(tab[:id])
+        expect(@course.tab_hidden?(tab[:id])).to(hidden ? be_truthy : be_falsey)
+      end
+    ensure
+      @course.disable_feature!(:canvas_k6_theme)
+    end
+  end
 end
 
 describe Course, 'scoping' do
@@ -4826,6 +5026,13 @@ describe Course do
       end
     end
 
+    it 'should activate shard for new student view students' do
+      course_model
+      @shard1.activate do
+        expect { @course.student_view_student }.not_to raise_error
+      end
+    end
+
     it "should grant enrollment-based permissions regardless of shard" do
       @shard1.activate do
         account = Account.create!
@@ -5239,9 +5446,10 @@ describe Course do
 
   describe 'grade weight notification' do
     before :once do
-      course_with_student(:active_all => true, :active_cc => true)
+      course_with_student(:active_all => true)
+      communication_channel(@student, {username: 'test@example.com', active_cc: true})
       n = Notification.create!(name: 'Grade Weight Changed', category: 'TestImmediately')
-      NotificationPolicy.create(:notification => n, :communication_channel => @student.communication_channel, :frequency => "immediately")
+      NotificationPolicy.create!(:notification => n, :communication_channel => @student.communication_channel, :frequency => "immediately")
     end
 
     it "sends a notification when the course scheme changes" do
@@ -5552,9 +5760,8 @@ end
 describe Course, "#apply_nickname_for!" do
   before(:once) do
     @course = Course.create! :name => 'some terrible name'
-    @user = User.new
-    @user.course_nicknames[@course.id] = 'nickname'
-    @user.save!
+    @user = User.create!
+    @user.set_preference(:course_nicknames, @course.id, 'nickname')
   end
 
   it "sets name to user's nickname (non-persistently)" do
@@ -5806,5 +6013,25 @@ describe Course, "#show_total_grade_as_points?" do
       sub_account2.update_attribute(:parent_account, sub_account1)
       expect(cached_account_users).to eq [au]
     end
+  end
+end
+
+describe Course, "#has_modules?" do
+  before(:once) do
+    @course = Course.create!
+  end
+
+  it "returns false when the course has no modules" do
+    expect(@course).not_to be_has_modules
+  end
+
+  it "returns false when all modules are soft-deleted" do
+    @course.context_modules.create!(workflow_state: "deleted")
+    expect(@course).not_to be_has_modules
+  end
+
+  it "returns true when at least one not-deleted module exists" do
+    @course.context_modules.create!
+    expect(@course).to be_has_modules
   end
 end

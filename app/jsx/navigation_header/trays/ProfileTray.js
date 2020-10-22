@@ -19,10 +19,12 @@
 import I18n from 'i18n!ProfileTray'
 import React from 'react'
 import {arrayOf, bool, object, shape, string} from 'prop-types'
-import {Avatar, Badge, Heading, List, Text, Spinner} from '@instructure/ui-elements'
+import {Avatar, Badge, Heading, List, Text} from '@instructure/ui-elements'
+import {Spinner} from '@instructure/ui-spinner'
 import {Link} from '@instructure/ui-link'
-import {View} from '@instructure/ui-layout'
+import {View} from '@instructure/ui-view'
 import LogoutButton from '../LogoutButton'
+import HighContrastModeToggle from './HighContrastModeToggle'
 import {AccessibleContent} from '@instructure/ui-a11y'
 
 // Trying to keep this as generalized as possible, but it's still a bit
@@ -44,7 +46,7 @@ function ProfileTab({id, html_url, label, counts}) {
 
   return (
     <List.Item key={id}>
-      <View as="div" margin="small 0">
+      <View className={`profile-tab-${id}`} as="div" margin="small 0">
         <Link isWithinText={false} href={html_url}>
           {label}
           {renderCountBadge()}
@@ -63,6 +65,7 @@ ProfileTab.propTypes = {
 
 export default function ProfileTray(props) {
   const {userDisplayName, userAvatarURL, loaded, userPronouns, tabs, counts} = props
+
   return (
     <View as="div" padding="medium">
       <View textAlign="center">
@@ -73,6 +76,7 @@ export default function ProfileTray(props) {
           size="x-large"
           inline={false}
           margin="auto"
+          data-fs-exclude
         />
         <div style={{wordBreak: 'break-word'}}>
           <Heading level="h3" as="h2">
@@ -98,6 +102,8 @@ export default function ProfileTray(props) {
           </List.Item>
         )}
       </List>
+      <hr role="presentation" />
+      <HighContrastModeToggle />
     </View>
   )
 }

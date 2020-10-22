@@ -23,7 +23,6 @@ describe "calendar2" do
   include Calendar2Common
 
   before(:once) do
-    Account.default.enable_feature!(:student_planner)
     course_with_teacher(active_all: true, new_user: true)
     @student1 = User.create!(name: 'Student 1')
     @course.enroll_student(@student1).accept!
@@ -224,13 +223,11 @@ describe "calendar2" do
     before :once do
       @course1 = @course
       @course2 = course_with_student(user: @user, active_all: true).course
-      @user.update!(preferences: {:selected_calendar_contexts => ["user_#{@user.id}", "course_#{@course1.id}", "course_#{@course2.id}"]})
     end
 
     before :each do
       # or some stuff we need to click is "below the fold"
-
-
+      @user.update!(preferences: {:selected_calendar_contexts => ["user_#{@user.id}", "course_#{@course1.id}", "course_#{@course2.id}"]})
       user_session(@user)
     end
 

@@ -18,24 +18,23 @@
 
 class MultiCache
   class << self
-    delegate :fetch, :delete, to: :cache
+    delegate :fetch, :delete, :validate_consul_event, to: :cache
 
     def cache
-      @multi_cache ||= begin
-        ha_cache_config = YAML.load(Canvas::DynamicSettings.find(tree: :private, cluster: ApplicationController.cluster)["ha_cache.yml"] || "{}").symbolize_keys || {}
+      unless defined?(@multi_cache)
+        ha_cache_config = YAML.load(Canvas::DynamicSettings.find(tree: :private, cluster: Canvas.cluster)["ha_cache.yml"] || "{}").symbolize_keys || {}
         if (ha_cache_config[:cache_store])
           ha_cache_config[:url] = ha_cache_config[:servers] if ha_cache_config[:servers]
           store = ActiveSupport::Cache.lookup_store(ha_cache_config[:cache_store].to_sym, ha_cache_config)
           store.options.delete(:namespace)
-          store
-        else
-          Rails.cache
+          @multi_cache = store
         end
       end
+      @multi_cache || Rails.cache
     end
 
     def reset
-      @multi_cache = nil
+      remove_instance_variable(:@multi_cache) if instance_variable_defined?(:@multi_cache)
     end
   end
 

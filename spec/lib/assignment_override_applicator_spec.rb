@@ -277,7 +277,6 @@ describe AssignmentOverrideApplicator do
 
           @adhoc_override = assignment_override_model(:assignment => @assignment)
           @adhoc_override.assignment_override_students.create!(:user => @student)
-          allow(ActiveRecord::Base.connection).to receive(:use_qualified_names?).and_return(true)
 
           @shard1.activate do
             ovs = AssignmentOverrideApplicator.overrides_for_assignment_and_user(@assignment, @teacher)
@@ -1051,7 +1050,7 @@ describe AssignmentOverrideApplicator do
 
   describe "overridden_unlock_at" do
     before :each do
-      @assignment = create_assignment(:unlock_at => 10.days.from_now)
+      @assignment = create_assignment(:due_at => 11.days.from_now, :unlock_at => 10.days.from_now)
       @override = assignment_override_model(:assignment => @assignment)
     end
 
@@ -1120,7 +1119,7 @@ describe AssignmentOverrideApplicator do
 
   describe "overridden_lock_at" do
     before :each do
-      @assignment = create_assignment(:lock_at => 5.days.from_now)
+      @assignment = create_assignment(:due_at => 1.day.from_now, :lock_at => 5.days.from_now)
       @override = assignment_override_model(:assignment => @assignment)
     end
 

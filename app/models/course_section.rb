@@ -135,6 +135,10 @@ class CourseSection < ActiveRecord::Base
     User.where(id: all_enrollments.select(:user_id)).touch_all
   end
 
+  def broadcast_data
+    { course_id: course_id, root_account_id: root_account_id }
+  end
+
   set_policy do
     given { |user, session| self.course.grants_right?(user, session, :manage_sections) }
     can :read and can :create and can :update and can :delete
@@ -334,7 +338,7 @@ class CourseSection < ActiveRecord::Base
     data = SisBatchRollBackData.build_dependent_data(sis_batch: sis_batch, contexts: cs, updated_state: 'deleted', batch_mode_delete: batch_mode)
     CourseSection.where(id: cs.map(&:id)).update_all(workflow_state: 'deleted', updated_at: Time.zone.now)
     Enrollment.where(course_section_id: cs.map(&:id)).active.find_in_batches do |e_batch|
-      Shackles.activate(:master) do
+      GuardRail.activate(:primary) do
         new_data = Enrollment::BatchStateUpdater.destroy_batch(e_batch, sis_batch: sis_batch, batch_mode: batch_mode)
         data.push(*new_data)
         SisBatchRollBackData.bulk_insert_roll_back_data(data)

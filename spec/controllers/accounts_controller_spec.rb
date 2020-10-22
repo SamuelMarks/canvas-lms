@@ -128,6 +128,59 @@ describe AccountsController do
     end
   end
 
+  context "restore_user" do
+    before(:once) do
+      @site_admin = site_admin_user
+      account_with_admin
+      @deleted_user = user_with_pseudonym(account: @account)
+      @deleted_user.destroy
+    end
+
+    before(:each) {user_session(@site_admin)}
+
+    it 'allows site-admins to restore deleted users' do
+      put 'restore_user', params: {account_id: @account.id, user_id: @deleted_user.id}
+      expect(@deleted_user.reload.workflow_state).to eq 'registered'
+      expect(@deleted_user.pseudonyms.take.workflow_state).to eq 'active'
+      expect(@deleted_user.user_account_associations.find_by(account: @account)).not_to be_nil
+    end
+
+    it 'does not allow standard admins to restore deleted users' do
+      # probably fine if someone wants to allow regular admins to do this at some point
+      user_session(@admin)
+      put 'restore_user', params: {account_id: @account.id, user_id: @deleted_user.id}, format: 'json'
+      expect(response).to be_unauthorized
+    end
+
+    it 'should 404 for non-existent users' do
+      put 'restore_user', params: {account_id: @account.id, user_id: 0}
+      expect(response).to be_not_found
+
+      # user without a pseudonym in the account
+      @missing_user = user_factory
+      @missing_user.destroy
+      put 'restore_user', params: {account_id: @account.id, user_id: @missing_user.id}
+      expect(response).to be_not_found
+    end
+
+    it 'should not change the state of users who were only removed from the account' do
+      @doomed_user = user_with_pseudonym(account: @account, user_state: 'pre_registered')
+      @doomed_user.remove_from_root_account(@account)
+
+      put 'restore_user', params: {account_id: @account.id, user_id: @doomed_user.id}
+      expect(@doomed_user.reload.workflow_state).to eq 'pre_registered'
+      expect(@doomed_user.pseudonyms.take.workflow_state).to eq 'active'
+      expect(@doomed_user.user_account_associations.find_by(account: @account)).not_to be_nil
+    end
+
+    it 'should 400 for non-deleted users' do
+      @active_user = user_with_pseudonym(account: @account)
+
+      put 'restore_user', params: {account_id: @account.id, user_id: @active_user.id}
+      expect(response).to be_bad_request
+    end
+  end
+
   describe "add_account_user" do
     before(:once) {account_with_admin}
     before(:each) {user_session(@admin)}
@@ -363,6 +416,18 @@ describe AccountsController do
       expect(link['url']).to eq '#dawg'
     end
 
+    it "doesn't allow invalid help links" do
+      account_with_admin_logged_in
+      post 'update', params: {:id => @account.id, :account => { :custom_help_links => { '0' =>
+        { :id => 'instructor_question', :text => 'Ask Your Instructor a Question',
+          :subtext => 'Questions are submitted to your instructor', :type => 'default',
+          :url => '#teacher_feedback', :available_to => ['student'],
+          :is_featured => true, :is_new => true }
+      }}}
+      expect(flash[:error]).to match(/update failed/)
+      expect(@account.reload.settings[:custom_help_links]).to be_nil
+    end
+
     it "should allow updating services that appear in the ui for the current user" do
       AccountServices.register_service(:test1,
                                        {name: 'test1', description: '', expose_to_ui: :setting, default: false})
@@ -405,7 +470,6 @@ describe AccountsController do
     it "should overwrite account users' existing dashboard_view if specified" do
       account_with_admin_logged_in
       @subaccount = @account.sub_accounts.create!
-      @account.enable_feature! :student_planner
       @account.save!
 
       course_with_teacher(:account => @subaccount, :active_all => true)
@@ -593,6 +657,70 @@ describe AccountsController do
         expect(@account.reload.terms_of_service.passive).to eq false
         post 'update', params: {:id => @account.id, :account => {:terms_of_service => {:passive => "1"}}}
         expect(@account.reload.terms_of_service.passive).to eq true
+      end
+    end
+
+    describe "privacy settings" do
+      let(:account) { account_model }
+      let(:sub_account) { account_model(root_account: account) }
+      let(:site_admin) { site_admin_user }
+      let(:payload) {
+        {
+          account: {
+            settings: {
+              enable_fullstory: '0',
+              enable_google_analytics: '0',
+            }
+          }
+        }
+      }
+
+      it 'accepts changes made by a siteadmin to a root account' do
+        user_session(site_admin)
+
+        expect {
+          post 'update', format: 'json', params: { id: account.id, **payload }
+        }.to change {
+          account.reload.settings.fetch(:enable_fullstory, true)
+        }.from(true).to(false).and change {
+          account.reload.settings.fetch(:enable_google_analytics, true)
+        }.from(true).to(false)
+      end
+
+      it 'ignores changes made to the site_admin account' do
+        user_session(site_admin)
+
+        expect {
+          post 'update', format: 'json', params: { id: Account.site_admin.id, **payload }
+        }.to not_change {
+          account.reload.settings.fetch(:enable_fullstory, true)
+        }.and not_change {
+          account.reload.settings.fetch(:enable_google_analytics, true)
+        }
+      end
+
+      it 'ignores changes to sub accounts' do
+        user_session(site_admin)
+
+        expect {
+          post 'update', format: 'json', params: { id: sub_account.id, **payload }
+        }.to not_change {
+          account.reload.settings.fetch(:enable_fullstory, true)
+        }.and not_change {
+          account.reload.settings.fetch(:enable_google_analytics, true)
+        }
+      end
+
+      it 'ignores changes from regular admins' do
+        user_session(account_admin_user(account: account))
+
+        expect {
+          post 'update', format: 'json', params: { id: account.id, **payload }
+        }.to not_change {
+          account.reload.settings.fetch(:enable_fullstory, true)
+        }.and not_change {
+          account.reload.settings.fetch(:enable_google_analytics, true)
+        }
       end
     end
 
@@ -792,6 +920,27 @@ describe AccountsController do
       expect(response).to be_successful
       expect(response.body).to match(/\"content\":\"custom content\"/)
     end
+
+    it "should return default self_registration_type" do
+      @account.update_terms_of_service(terms_type: "custom", content: "custom content")
+
+      remove_user_session
+      get 'terms_of_service', params: {account_id: @account.id}
+
+      expect(response).to be_successful
+      expect(response.body).to match(/\"self_registration_type\":\"none\"/)
+    end
+
+    it "should return other self_registration_type" do
+      @account.update_terms_of_service(terms_type: "custom", content: "custom content")
+      @account.canvas_authentication_provider.update_attribute(:self_registration, 'observer')
+
+      remove_user_session
+      get 'terms_of_service', params: {account_id: @account.id}
+
+      expect(response).to be_successful
+      expect(response.body).to match(/\"self_registration_type\":\"observer\"/)
+    end
   end
 
   describe "help links" do
@@ -822,6 +971,16 @@ describe AccountsController do
       expect(response.body).to match(/\"id\":\"instructor_question\"/)
       expect(response.body).to match(/\"id\":\"search_the_canvas_guides\"/)
       expect(response.body).to match(/\"type\":\"default\"/)
+      expect(response.body).to_not match(/\"id\":\"covid\"/)
+    end
+
+    context "with featured_help_links enabled" do
+      it "should return the covid help link as a default" do
+        Account.site_admin.enable_feature!(:featured_help_links)
+        get 'help_links', params: {account_id: @account.id}
+        expect(response).to be_successful
+        expect(response.body).to match(/\"id\":\"covid\"/)
+      end
     end
 
     it "should return custom help links" do
@@ -1190,62 +1349,53 @@ describe AccountsController do
       user
     end
 
-    it "redirects the user to the account settings URL if the eportfolio_moderation flag is not enabled" do
+    let(:returned_portfolios) { assigns[:eportfolios] }
+
+    it "returns eportfolios that have been auto-flagged as spam, or manually marked as spam/safe" do
       get "eportfolio_moderation", params: {account_id: @account.id}
-      expect(response).to redirect_to(account_settings_url(@account))
+      expect(returned_portfolios.count).to eq 3
     end
 
-    context "when the eportfolio_moderation flag is enabled" do
-      before(:each) { @account.root_account.enable_feature!(:eportfolio_moderation) }
+    it "ignores portfolios belonging to deleted users" do
+      vanished_eportfolio = Eportfolio.create!(user_id: vanished_author.id, name: "hello", spam_status: "marked_as_spam")
 
-      let(:returned_portfolios) { assigns[:eportfolios] }
+      get "eportfolio_moderation", params: {account_id: @account.id}
+      expect(returned_portfolios).not_to include(vanished_eportfolio)
+    end
 
-      it "returns eportfolios that have been auto-flagged as spam, or manually marked as spam/safe" do
-        get "eportfolio_moderation", params: {account_id: @account.id}
-        expect(returned_portfolios.count).to eq 3
+    it "returns flagged_as_possible_spam results, then marked_as_spam, then marked_as_safe" do
+      get "eportfolio_moderation", params: {account_id: @account.id}
+      expect(returned_portfolios.pluck(:name)).to eq ["maybe spam", "spam", "not spam"]
+    end
+
+    it "excludes results from authors who have no portfolios marked as possible or definitive spam" do
+      safe_user = User.create!
+      safe_user.user_account_associations.create!(account: @account)
+      safe_eportfolio = safe_user.eportfolios.create!(name: ":)")
+      safe_eportfolio.update!(spam_status: "marked_as_safe")
+
+      get "eportfolio_moderation", params: {account_id: @account.id}
+      expect(returned_portfolios.pluck(:id)).not_to include(safe_eportfolio.id)
+    end
+
+    context "pagination" do
+      before(:once) do
+        Setting.set('eportfolio_moderation_results_per_page', 2)
       end
 
-      it "ignores portfolios belonging to deleted users" do
-        vanished_eportfolio = Eportfolio.create!(user_id: vanished_author.id, name: "hello", spam_status: "marked_as_spam")
-
+      it "does not return more than the specified results per page" do
         get "eportfolio_moderation", params: {account_id: @account.id}
-        expect(returned_portfolios).not_to include(vanished_eportfolio)
+        expect(returned_portfolios.count).to eq 2
       end
 
-      it "returns flagged_as_possible_spam results, then marked_as_spam, then marked_as_safe" do
+      it "returns the first page of results if no 'page' param is given" do
         get "eportfolio_moderation", params: {account_id: @account.id}
-        expect(returned_portfolios.pluck(:name)).to eq ["maybe spam", "spam", "not spam"]
+        expect(returned_portfolios.pluck(:name)).to eq ["maybe spam", "spam"]
       end
 
-      it "excludes results from authors who have no portfolios marked as possible or definitive spam" do
-        safe_user = User.create!
-        safe_user.user_account_associations.create!(account: @account)
-        safe_eportfolio = safe_user.eportfolios.create!(name: ":)")
-        safe_eportfolio.update!(spam_status: "marked_as_safe")
-
-        get "eportfolio_moderation", params: {account_id: @account.id}
-        expect(returned_portfolios.pluck(:id)).not_to include(safe_eportfolio.id)
-      end
-
-      context "pagination" do
-        before(:once) do
-          Setting.set('eportfolio_moderation_results_per_page', 2)
-        end
-
-        it "does not return more than the specified results per page" do
-          get "eportfolio_moderation", params: {account_id: @account.id}
-          expect(returned_portfolios.count).to eq 2
-        end
-
-        it "returns the first page of results if no 'page' param is given" do
-          get "eportfolio_moderation", params: {account_id: @account.id}
-          expect(returned_portfolios.pluck(:name)).to eq ["maybe spam", "spam"]
-        end
-
-        it "paginates using the 'page' param if supplied" do
-          get "eportfolio_moderation", params: {account_id: @account.id, page: 2}
-          expect(returned_portfolios.pluck(:name)).to eq ["not spam"]
-        end
+      it "paginates using the 'page' param if supplied" do
+        get "eportfolio_moderation", params: {account_id: @account.id, page: 2}
+        expect(returned_portfolios.pluck(:name)).to eq ["not spam"]
       end
     end
   end

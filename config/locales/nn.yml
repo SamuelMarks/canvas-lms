@@ -1978,6 +1978,9 @@ nn:
   allowed_attempts_4e229caa: "Tillatne forsøk"
   allows_a_user_to_access_the_act_as_user_link_on_st_7d3e3e3d: "Gir brukarar tilgang til Opptre som brukar-lenka på studentkontekstkort"
   allows_admin_user_to_view_account_statistics_341f00d9: "Gir adminbrukarar tilgang til å sjå kontostatistikk."
+  allows_admins_to_view_a_log_containing_information_128dc85f: |-
+      Gir administratorar løyve til å vise logg over informasjon om alle nyleg kjøyrde
+      GraphQL-mutasjonar.
   allows_admins_to_view_a_log_containing_information_5d4eb5e0: |-
       Gir administratorar løyve til å vise logg over informasjon om alle nyleg kjøyrde
       GraphQL-mutasjonar.
@@ -2055,8 +2058,8 @@ nn:
       Gir ein brukar løyve til å sende emneinvitasjonar på nytt.
   allows_user_to_add_students_to_a_course_from_the_a_3b752dd2: "Gir ein brukar løyve til å legge studentar til emne frå emneoversikta på kontonivå."
   allows_user_to_add_teachers_course_designers_or_ta_a7fdaceb: "Gir ein brukar løyve til å legge faglærarar, kursdesignarar eller undervisingsassistentar til eit emne frå emneoversikta på kontonivå."
-  allows_user_to_configure_alerts_in_course_settings_40a81b1d: "Gi ein brukar løyve til å konfigurere varsel i emneinnstillingar. Varsel er ein sjeldan brukt funksjon som er laga for å sende eit varsel til studentar, faglærarar eller administratorar på grunnlag av spesifikke triggarar (t.d. ingen student/faglærar-interaksjon på ei veke). Dei sjekkast kvar dag, og varsel sendast til studenten og/eller faglæraren fram til det ikkje lenger er grunnlag for varsel."
-  allows_user_to_configure_alerts_in_course_settings_806397b5: "Gi ein brukar løyve til å konfigurere varsel i emneinnstillingar. Varsel er ein sjeldan brukt funksjon som er laga for å sende eit varsel til studentar, faglærarar eller administratorar på grunnlag av spesifikke triggarar (t.d. ingen student/faglærar-interaksjon på ei veke). Dei sjekkast kvar dag, og varsel sendast til studenten og/eller faglæraren inntil det ikkje lenger er grunnlag for varsel."
+  allows_user_to_configure_alerts_in_course_settings_40a81b1d: "Gi ein brukar løyve til å konfigurere varsel i emneinnstillingar. Varsel er ein sjeldan brukt funksjon som er laga for å sende eit varsel til studentar, faglærarar eller administratorar på grunnlag av spesifikke triggarar (t.d. ingen student/faglærar-interaksjon på ei veke/7 dagar). Dei sjekkast kvar dag, og varsel sendast til studenten og/eller faglæraren fram til det ikkje lenger er grunnlag for varsel."
+  allows_user_to_configure_alerts_in_course_settings_806397b5: "Gi ein brukar løyve til å konfigurere varsel i emneinnstillingar. Varsel er ein sjeldan brukt funksjon som er laga for å sende eit varsel til studentar, faglærarar eller administratorar på grunnlag av spesifikke triggarar (t.d. ingen student/faglærar-interaksjon på ei veke/7dagar). Dei sjekkast kvar dag, og varsel sendast til studenten og/eller faglæraren inntil det ikkje lenger er grunnlag for varsel."
   allows_user_to_create_accounts_for_new_users_with__37a233d7: |-
       Gir ein brukar løyve til å opprette kontoar for nye brukarar med knappen Legg til personar på kontonivå.
       Gir ein brukar løyve til å fjerne og slå saman brukarar innafor ein konto.
@@ -10942,7 +10945,7 @@ nn:
   last_export_899a04c5: "Siste eksport: "
   last_first_name_95a078f5: "Etter-, fornamn"
   last_item_79583712: "Siste element: "
-  last_length_graded_items_6db7374e: "SIste %{length} vurderte element"
+  last_length_graded_items_6db7374e: "Siste %{length} vurderte element"
   last_login_54565109: "Siste pålogging"
   last_login_b7bc0479: "Siste pålogging: "
   last_modified_by_ca4bb5e1: "Sist endra av"
@@ -13358,7 +13361,7 @@ nn:
   models_to_include_9fb154ca: "Modellar til inkludering"
   moderate_assignment_ccb00173: "Moderer %{assignment}"
   moderate_assignment_name_cf59e0a7: "Moderer %{assignment_name}"
-  moderate_d0c85e92: Moderer
+  moderate_d0c85e92: Moderat
   moderate_grades_4f43f85d: "Moderer karakterar"
   moderated_assignment_12873e87: "Moderert oppgåve"
   moderated_assignments_must_be_manually_posted_unti_39545855: "Modererte oppgåver må postast manuelt fram til vurderingsresultat er sendt ut."

@@ -163,7 +163,7 @@ test('returns true if submissionType is "external_tool" and default tool is sele
   equal(assignment.isDefaultTool(), true)
 })
 
-QUnit.module('Assignment#isNonDefaultExternalTool', {
+QUnit.module('Assignment#isGenericExternalTool', {
   setup() {
     fakeENV.setup({
       DEFAULT_ASSIGNMENT_TOOL_NAME: 'Default Tool',
@@ -189,13 +189,13 @@ test('returns true when submissionType is "external_tool" and non default tool i
     }
   })
   assignment.submissionTypes(['external_tool'])
-  equal(assignment.isNonDefaultExternalTool(), true)
+  equal(assignment.isGenericExternalTool(), true)
 })
 
 test('returns true when submissionType is "external_tool"', () => {
   const assignment = new Assignment({name: 'foo'})
   assignment.submissionTypes(['external_tool'])
-  equal(assignment.isNonDefaultExternalTool(), true)
+  equal(assignment.isGenericExternalTool(), true)
 })
 
 QUnit.module('Assignment#isExternalTool')
@@ -1523,5 +1523,31 @@ QUnit.module('Assignment#quizzesRespondusEnabled', hooks => {
     assignment.set('require_lockdown_browser', true)
     assignment.set('is_quiz_lti_assignment', true)
     equal(assignment.quizzesRespondusEnabled(), true)
+  })
+})
+
+QUnit.module('Assignment#externalToolData', hooks => {
+  let assignment
+  const ext_data = {key1: 'val1'}
+
+  hooks.beforeEach(() => {
+    assignment = new Assignment({
+      name: 'foo',
+      external_tool_tag_attributes: {
+        url: 'https://www.test.com/blti?foo',
+        external_data: ext_data
+      }
+    })
+    fakeENV.setup({current_user_roles: []})
+  })
+
+  hooks.afterEach(() => {
+    fakeENV.teardown()
+  })
+
+  test('returns external data from the assignments content tag', () => {
+    const data = assignment.externalToolData()
+    equal(data.key1, 'val1')
+    ok(assignment.externalToolDataStringified())
   })
 })

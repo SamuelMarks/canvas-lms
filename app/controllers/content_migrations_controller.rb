@@ -124,6 +124,7 @@
 class ContentMigrationsController < ApplicationController
   include Api::V1::ContentMigration
   include Api::V1::ExternalTools
+  include NewQuizzesFeaturesHelper
 
   before_action :require_context
   before_action :require_auth
@@ -174,9 +175,12 @@ class ContentMigrationsController < ApplicationController
 
       js_env(:SHOW_SELECT => should_show_course_copy_dropdown)
       js_env(:CONTENT_MIGRATIONS_EXPIRE_DAYS => ContentMigration.expire_days)
-      js_env(:QUIZZES_NEXT_CONFIGURED_ROOT => @context.root_account.feature_allowed?(:quizzes_next) &&
-             @context.root_account.feature_enabled?(:import_to_quizzes_next))
-      js_env(:QUIZZES_NEXT_ENABLED => @context.feature_enabled?(:quizzes_next) && @context.quiz_lti_tool.present?)
+      js_env(:QUIZZES_NEXT_ENABLED => new_quizzes_enabled?)
+      js_env(:NEW_QUIZZES_IMPORT => new_quizzes_import_enabled?)
+      js_env(:NEW_QUIZZES_MIGRATION => new_quizzes_migration_enabled?)
+      js_env(:NEW_QUIZZES_IMPORT_THIRD => new_quizzes_import_third_party?)
+      js_env(:NEW_QUIZZES_MIGRATION_DEFAULT => new_quizzes_migration_default)
+      js_env(:SHOW_SELECTABLE_OUTCOMES_IN_IMPORT => @domain_root_account.feature_enabled?('selectable_outcomes_in_course_copy'))
       set_tutorial_js_env
     end
   end
@@ -565,7 +569,9 @@ class ContentMigrationsController < ApplicationController
         end
 
         if !params.has_key?(:do_not_run) || !Canvas::Plugin.value_to_boolean(params[:do_not_run])
-          @content_migration.queue_migration(@plugin)
+          @content_migration.shard.activate do
+            @content_migration.queue_migration(@plugin)
+          end
         end
       end
 
@@ -579,7 +585,7 @@ class ContentMigrationsController < ApplicationController
     if @current_user.adminable_accounts.any?
       false # assume that if they're an account admin they're probably managing so many courses it's not worth it to even try the count
     else
-      course_count = Shard.with_each_shard(@current_user.in_region_associated_shards) { @current_user.manageable_courses.count }.sum
+      course_count = Shard.with_each_shard(@current_user.in_region_associated_shards) { @current_user.manageable_courses(true).count }.sum
       course_count <= 100
     end
   end

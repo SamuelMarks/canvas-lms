@@ -27,6 +27,12 @@ tinymce.create('tinymce.plugins.InstructureEquation', {
 
     ed.addCommand('instructureEquation', clickCallback.bind(this, ed, document))
 
+    ed.ui.registry.addMenuItem('instructure_equation', {
+      text: formatMessage('Equation'),
+      icon: 'equation',
+      onAction: () => ed.execCommand('instructureEquation')
+    })
+
     ed.ui.registry.addToggleButton('instructure_equation', {
       tooltip: htmlEscape(
         formatMessage({
@@ -46,6 +52,25 @@ tinymce.create('tinymce.plugins.InstructureEquation', {
         ed.on('NodeChange', toggleActive)
         return () => ed.off('NodeChange', toggleActive)
       }
+    })
+
+    function isEquationImage(node) {
+      return node.tagName === 'IMG' && node.classList.contains('equation_image')
+    }
+
+    ed.ui.registry.addButton('instructure-equation-options', {
+      onAction(/* buttonApi */) {
+        ed.execCommand('instructureEquation')
+      },
+
+      text: formatMessage('Edit Equation')
+    })
+
+    ed.ui.registry.addContextToolbar('instructure-equation-toolbar', {
+      items: 'instructure-equation-options',
+      position: 'node',
+      predicate: isEquationImage,
+      scope: 'node'
     })
   }
 })

@@ -22,33 +22,35 @@ module PactConfig
   # accidentally breaking the contract tests
   module Providers
     CANVAS_LMS_API = 'Canvas LMS API'.freeze
-    sha = `git rev-parse --short HEAD`.strip
-    CANVAS_API_VERSION = '1.0' + "+#{sha}".freeze
+    CANVAS_API_VERSION = '1.0'.freeze
     CANVAS_LMS_LIVE_EVENTS = 'Canvas LMS Live Events'.freeze
+    OUTCOMES = 'Outcomes'.freeze
     ALL = Providers.constants.map { |c| Providers.const_get(c) }.freeze
   end
 
   # Add new API consumers to this module
   module Consumers
     my_broker_host = ENV.fetch('PACT_BROKER_HOST', 'pact-broker.docker')
+    # common consumer
+    GENERIC_CONSUMER = 'Generic Consumer'.freeze
+    CANVAS_API_VERSION = '1.0'.freeze
+    CANVAS_LMS_API = 'Canvas LMS API'.freeze
     if my_broker_host.include?(EXTERNAL_BROKER_HOST)
       # external consumers
-      GENERIC_CONSUMER = 'Generic Consumer'.freeze
       FIU = 'lmsAPI'.freeze
     else
       # internal consumers
-      ANDROID_STUDENT = 'Android Student'.freeze
-      ANDROID_TEACHER = 'Android Teacher'.freeze
-      ANDROID_PARENT = 'Android Parent'.freeze
-      GENERIC_CONSUMER = 'Generic Consumer'.freeze
       QUIZ_LTI = 'Quiz LTI'.freeze
       SISTEMIC = 'Sistemic'.freeze
+      ANDROID = 'android'.freeze
+      CANVAS_IOS = 'canvas-ios'.freeze
     end
     ALL = Consumers.constants.map { |c| Consumers.const_get(c) }.freeze
   end
 
   # Add new Live Events consumers to this module
   module LiveEventConsumers
+    CATALOG = 'Catalog'.freeze
     OUTCOMES = 'Outcomes'.freeze
     QUIZ_LTI = 'Quiz LTI'.freeze
   end
@@ -65,9 +67,7 @@ module PactConfig
 
     def broker_uri
       URI::HTTP.build(
-        scheme: protocol,
-        userinfo: "#{broker_username}:#{broker_password}",
-        host: broker_host
+        scheme: protocol, userinfo: "#{broker_username}:#{broker_password}", host: broker_host
       ).to_s
     end
 
@@ -77,6 +77,11 @@ module PactConfig
 
     def consumer_tag
       ENV.fetch('PACT_BROKER_TAG', 'latest')
+    end
+
+    def consumer_version
+      sha = ENV['SHA']
+      sha.blank? ? Consumers::CANVAS_API_VERSION : "#{Consumers::CANVAS_API_VERSION}+#{sha}"
     end
 
     def broker_password

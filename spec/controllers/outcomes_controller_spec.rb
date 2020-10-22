@@ -69,9 +69,38 @@ describe OutcomesController do
     it "should find a common core group from settings" do
       user_session(@admin)
       account_outcome
-      Setting.set(AcademicBenchmark.common_core_setting_key, @outcome_group.id)
+      allow(Shard.current).to receive(:settings).and_return({ common_core_outcome_group_id: @outcome_group.id })
       get 'index', params: {:account_id => @account.id}
       expect(assigns[:js_env][:COMMON_CORE_GROUP_ID]).to eq @outcome_group.id
+    end
+
+    it "should pass along permissions" do
+      user_session(@admin)
+      get 'index', params: {:account_id => @account.id}
+      permissions = assigns[:js_env][:PERMISSIONS]
+      [
+        :manage_outcomes, :manage_rubrics, :manage_courses, :import_outcomes, :manage_proficiency_scales,
+        :manage_proficiency_calculations
+      ].each do |permission|
+        expect(permissions).to have_key(permission)
+      end
+    end
+
+    context 'account_level_mastery_scales feature flag enabled' do
+      before(:once) do
+        @account.root_account.enable_feature! :account_level_mastery_scales
+      end
+
+      it 'includes proficiency roles' do
+        user_session(@admin)
+        get 'index', params: {:account_id => @account.id}
+
+        %i[PROFICIENCY_CALCULATION_METHOD_ENABLED_ROLES PROFICIENCY_SCALES_ENABLED_ROLES].each do |key|
+          roles = controller.js_env[key]
+          expect(roles.length).to eq 1
+          expect(roles.dig(0, :role)).to eq 'AccountAdmin'
+        end
+      end
     end
   end
 

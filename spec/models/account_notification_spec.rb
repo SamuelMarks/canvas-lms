@@ -37,7 +37,7 @@ describe AccountNotification do
 
   it "should find announcements only if user has a role in the list of roles to which the announcement is restricted" do
     @announcement.destroy
-    role_ids = ["TeacherEnrollment", "AccountAdmin"].map{|name| Role.get_built_in_role(name).id}
+    role_ids = [teacher_role, admin_role].map(&:id)
     account_notification(:role_ids => role_ids, :message => "Announcement 1")
     @a1 = @announcement
     account_notification(:account => @account, :role_ids => [nil], :message => "Announcement 2") #students not currently taking a course
@@ -50,7 +50,7 @@ describe AccountNotification do
     @teacher = @user
     account_admin_user(:account => @account)
     @admin = @user
-    course_with_student(:course => @course)
+    course_with_student(:course => @course).accept(true)
     @student = @user
 
     expect(AccountNotification.for_user_and_account(@teacher, @account).map(&:id).sort).to eq [@a1.id, @a3.id]
@@ -71,18 +71,95 @@ describe AccountNotification do
     expect(AccountNotification.for_user_and_account(@unenrolled, Account.site_admin).map(&:id).sort).to eq [@a5.id, @a6.id]
   end
 
+  describe 'current announcements' do
+    it 'should return true if time matches end_at' do
+      Timecop.freeze do
+        @announcement.update(start_at: Time.zone.now - 1.minute)
+        @announcement.update(end_at: Time.zone.now)
+        expect(@announcement.current).to eq true
+      end
+    end
+
+    it 'should return true if announcement is current' do
+      @announcement.update(start_at: Time.zone.now - 1.minute)
+      @announcement.update(end_at: Time.zone.now + 1.minute)
+      expect(@announcement.current).to eq true
+    end
+
+    it 'should return false if announcement is past' do
+      @announcement.update(start_at: Time.zone.now - 2.minutes)
+      @announcement.update(end_at: Time.zone.now - 1.minute)
+      expect(@announcement.current).to eq false
+    end
+  end
+
+  describe 'past announcements' do
+    it 'should return true if announcement is past' do
+      @announcement.update(start_at: Time.zone.now - 2.minutes)
+      @announcement.update(end_at: Time.zone.now - 1.minute)
+      expect(@announcement.past).to eq true
+    end
+
+    it 'should return false if announcement is current' do
+      @announcement.update(start_at: Time.zone.now - 1.minute)
+      @announcement.update(end_at: Time.zone.now + 1.minute)
+      expect(@announcement.past).to eq false
+    end
+  end
+
+  it 'should sort' do
+    @announcement.destroy
+    role_ids = ["TeacherEnrollment", "AccountAdmin"].map{|name| Role.get_built_in_role(name, root_account_id: Account.default.id).id}
+    account_notification(:role_ids => role_ids, :message => "Announcement 1")
+    @a1 = @announcement
+    account_notification(:account => @account, :role_ids => [nil], :message => "Announcement 2") #students not currently taking a course
+    @a2 = @announcement
+    account_notification(:account => @account, :message => "Announcement 3") # no roles, should go to all
+    @announcement[:end_at] = @announcement[:end_at] + 1.month
+    @a3 = @announcement
+
+    @unenrolled = @user
+    course_with_teacher(:account => @account)
+    @teacher = @user
+    account_admin_user(:account => @account)
+    @admin = @user
+    course_with_student(:course => @course).accept(true)
+    @student = @user
+
+    expect(AccountNotification.for_user_and_account(@teacher, @account)).to eq [@a3, @a1]
+  end
+
   it "should allow closing an announcement" do
     @user.close_announcement(@announcement)
-    expect(@user.preferences[:closed_notifications]).to eq [@announcement.id]
+    expect(@user.get_preference(:closed_notifications)).to eq [@announcement.id]
     expect(AccountNotification.for_user_and_account(@user, Account.default)).to eq []
   end
 
   it "should remove non-applicable announcements from user preferences" do
     @user.close_announcement(@announcement)
-    expect(@user.preferences[:closed_notifications]).to eq [@announcement.id]
+    expect(@user.get_preference(:closed_notifications)).to eq [@announcement.id]
     @announcement.destroy
     expect(AccountNotification.for_user_and_account(@user, Account.default)).to eq []
-    expect(@user.preferences[:closed_notifications]).to eq []
+    expect(@user.get_preference(:closed_notifications)).to eq []
+  end
+
+  it "caches queries for root accounts" do
+    enable_cache do
+      Timecop.freeze do
+        expect(MultiCache.fetch(AccountNotification.cache_key_for_root_account(@account.id, Time.now))).to be_nil
+        expect(MultiCache.fetch(AccountNotification.cache_key_for_root_account(Account.site_admin.id, Time.now))).to be_nil
+        # once for @account, once for site admin
+        allow(AccountNotification).to receive(:where).twice.and_call_original
+
+        expect(AccountNotification.for_user_and_account(@user, @account)).to eq [@announcement]
+
+        expect(MultiCache.fetch(AccountNotification.cache_key_for_root_account(@account.id, Time.now))).to_not be_nil
+        expect(MultiCache.fetch(AccountNotification.cache_key_for_root_account(Account.site_admin.id, Time.now))).to_not be_nil
+
+        # no more calls to `where`; this _must_ be returned from cache
+        expect(AccountNotification.for_user_and_account(@user, @account)).to eq [@announcement]
+      end
+    end
   end
 
   describe "sub accounts" do
@@ -94,7 +171,7 @@ describe AccountNotification do
       params = {
         subject: 'sub account notification',
         account: @sub_account,
-        role_ids: [Role.get_built_in_role("StudentEnrollment").id]
+        role_ids: [student_role.id]
       }
       sub_account_announcement = sub_account_notification(params)
       unenrolled = @user
@@ -110,7 +187,7 @@ describe AccountNotification do
       params = {
         subject: 'sub account notification',
         account: @sub_account,
-        role_ids: [Role.get_built_in_role("StudentEnrollment").id]
+        role_ids: [student_role.id]
       }
       sub_account_announcement = sub_account_notification(params)
       enrollment = course_with_student(account: @sub_account, active_all: true)
@@ -124,7 +201,7 @@ describe AccountNotification do
       params = {
         subject: 'sub account notification',
         account: @sub_account,
-        role_ids: [Role.get_built_in_role("StudentEnrollment").id]
+        role_ids: [student_role.id]
       }
       sub_account_announcement = sub_account_notification(params)
 
@@ -138,7 +215,7 @@ describe AccountNotification do
       params = {
         subject: 'sub account notification',
         account: @sub_account,
-        role_ids: [Role.get_built_in_role("AccountAdmin").id]
+        role_ids: [admin_role.id]
       }
       sub_account_announcement = sub_account_notification(params)
       non_admin_user = @user
@@ -184,14 +261,14 @@ describe AccountNotification do
 
     it "scopes to active enrollment accounts" do
       sub_announcement = sub_account_notification(subject: 'blah', account: @sub_account)
-      course_with_student(user: @user, account: @sub_account, active_all: true)
+      course_with_student(user: @user, account: @sub_account, active_all: true).accept(true)
       other_root_account = Account.create!
       other_announcement = account_notification(account: other_root_account)
-      course_with_student(user: @user, account: other_root_account, active_all: true)
+      course_with_student(user: @user, account: other_root_account, active_all: true).accept(true)
       nother_root_account = Account.create!(name: 'nother account')
       nother_announcement = account_notification(account: nother_root_account)
       # not an active course and will be excluded
-      course_with_student(user: @user, account: nother_root_account)
+      course_with_student(user: @user, account: nother_root_account).accept(true)
 
       notes = AccountNotification.for_user_and_account(@user, Account.default)
       expect(notes).to include sub_announcement
@@ -212,7 +289,7 @@ describe AccountNotification do
     it "still show sub-account announcements even if the course is unpublished" do
       # because that makes sense i guess?
       unpub_sub_announcement = sub_account_notification(subject: 'blah', account: @sub_account)
-      course_with_student(user: @user, account: @sub_account)
+      course_with_student(user: @user, account: @sub_account).accept(true)
 
       notes = AccountNotification.for_user_and_account(@user, Account.default)
       expect(notes).to include unpub_sub_announcement
@@ -224,7 +301,7 @@ describe AccountNotification do
       other_sub_account = Account.default.sub_accounts.create!
       course_with_student(user: @user, account: other_sub_account, active_all: true)
       other_sub_announcement = sub_account_notification(subject: 'blah', account: other_sub_account,
-        role_ids: [Role.get_built_in_role("TeacherEnrollment").id])
+        role_ids: [teacher_role.id])
       # should not show to user because they're not a teacher in this subaccount
 
       expect(AccountNotification.for_user_and_account(@user, Account.default)).to_not include(other_sub_announcement)
@@ -234,7 +311,7 @@ describe AccountNotification do
       sub_sub_account = @sub_account.sub_accounts.create!
       course_with_teacher(user: @user, account: sub_sub_account, active_all: true)
       sub_announcement = sub_account_notification(subject: 'blah', account: @sub_account,
-        role_ids: [Role.get_built_in_role("TeacherEnrollment").id])
+        role_ids: [teacher_role.id])
 
       expect(AccountNotification.for_user_and_account(@user, Account.default)).to include(sub_announcement)
     end
@@ -285,12 +362,12 @@ describe AccountNotification do
         @unenrolled = @user
         course_with_teacher(account: @a1)
         @student_teacher = @user
-        course_with_student(course: @course, user: @student_teacher)
+        course_with_student(course: @course, user: @student_teacher).accept(true)
         course_with_teacher(course: @course, :account => @a1)
         @teacher = @user
         account_admin_user(:account => @a1)
         @admin = @user
-        course_with_student(:course => @course)
+        course_with_student(:course => @course).accept(true)
         @student = @user
       end
 
@@ -493,7 +570,7 @@ describe AccountNotification do
       @shard1.activate do
         @user.close_announcement(@announcement)
       end
-      expect(@user.preferences[:closed_notifications]).to eq [@announcement.id]
+      expect(@user.get_preference(:closed_notifications)).to eq [@announcement.id]
       @shard1.activate do
         expect(AccountNotification.for_user_and_account(@user, Account.default)).to eq []
       end
@@ -507,11 +584,11 @@ describe AccountNotification do
       end
 
       Account.site_admin.shard.activate do
-        @site_admin_announcement = account_notification(account: Account.site_admin, role_ids: [Role.get_built_in_role("TeacherEnrollment").id])
+        @site_admin_announcement = account_notification(account: Account.site_admin, role_ids: [teacher_role(root_account_id: Account.site_admin.id).id])
       end
 
       @my_frd_account.shard.activate do
-        @local_announcement = account_notification(account: @my_frd_account, role_ids: [Role.get_built_in_role("TeacherEnrollment").id])
+        @local_announcement = account_notification(account: @my_frd_account, role_ids: [teacher_role(root_account_id: @my_frd_account.id).id])
         course_with_teacher(account: @my_frd_account)
       end
 
@@ -587,6 +664,32 @@ describe AccountNotification do
           @visible = account_notification(:account => @shard2_subaccount, :role_ids => [student_role.id])
         end
         expect(AccountNotification.for_user_and_account(@user, @account1)).to eq [@visible]
+      end
+    end
+
+    it "caches queries for root accounts" do
+      # need to make sure switchman doesn't add a namespace to the cache store, so don't just use
+      # enable_cache
+      allow(MultiCache).to receive(:cache).and_return(ActiveSupport::Cache::MemoryStore.new)
+      Timecop.freeze do
+        @shard1.activate do
+          @account = Account.create!
+          account_notification(account: @account)
+          user_factory
+
+          expect(MultiCache.fetch(AccountNotification.cache_key_for_root_account(@account.id, Time.now))).to be_nil
+          expect(MultiCache.fetch(AccountNotification.cache_key_for_root_account(Account.site_admin.id, Time.now))).to be_nil
+          # once for @account, once for site admin
+          allow(AccountNotification).to receive(:where).twice.and_call_original
+
+          expect(AccountNotification.for_user_and_account(@user, @account)).to eq [@announcement]
+
+          expect(MultiCache.fetch(AccountNotification.cache_key_for_root_account(@account.id, Time.now))).to_not be_nil
+          expect(MultiCache.fetch(AccountNotification.cache_key_for_root_account(Account.site_admin.id, Time.now))).to_not be_nil
+
+          # no more calls to `where`; this _must_ be returned from cache
+          expect(AccountNotification.for_user_and_account(@user, @account)).to eq [@announcement]
+        end
       end
     end
   end

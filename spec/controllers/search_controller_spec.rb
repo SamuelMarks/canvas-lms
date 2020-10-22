@@ -54,20 +54,6 @@ describe SearchController do
       expect(response.body).not_to include('bob')
     end
 
-    it "includes permissions" do
-      course_with_student_logged_in(:active_all => true)
-      @user.update_attribute(:name, 'Rick')
-      other = User.create(:name => 'Morty')
-      @course.enroll_student(other).tap do |e|
-        e.workflow_state = 'active'
-        e.save!
-      end
-
-      get 'recipients', params: {:context => @course.asset_string, :per_page => '20', :permissions => 'send_messages_all', :synthetic_contexts => true}
-      expect(response).to be_successful
-      expect(response.body).to include('permissions')
-    end
-
     it "should optionally show users who haven't finished registration" do
       course_with_student_logged_in(:active_all => true)
       @user.update_attribute(:name, 'billy')
@@ -138,6 +124,27 @@ describe SearchController do
         }
         expect(response).to be_successful
         expect(response.body).to include('other section')
+      end
+
+      it "should return sub-contexts with user counts" do
+        account_admin_user
+        user_session(@user)
+        course_factory(active_all: true)
+        @section = @course.course_sections.create!(:name => 'Section1')
+        @section2 = @course.course_sections.create!(:name => 'Section2')
+        @student1 = user_with_pseudonym(:active_all => true, :name => 'Student1', :username => 'student1@instructure.com')
+        @section.enroll_user(@student1, 'StudentEnrollment', 'active')
+        @student2 = user_with_pseudonym(:active_all => true, :name => 'Student2', :username => 'student2@instructure.com')
+        @section2.enroll_user(@student2, 'StudentEnrollment', 'active')
+
+        get 'recipients', params: {
+          type: 'section', exclude: ["section_#{@section2.id}"],
+          synthetic_contexts: true, context: "course_#{@course.id}_sections",
+          search_all_contexts: true
+        }
+        expect(response.body).to include('Section1')
+        expect(response.body).to include('"user_count":1')
+        expect(response.body).not_to include('Section2')
       end
 
       it "should return sub-users" do

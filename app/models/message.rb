@@ -46,7 +46,7 @@ class Message < ActiveRecord::Base
 
     delegate :deliver, :dispatch_at, :to => :message
     def message
-      @message ||= Message.where(:id => @id, :created_at => @created_at).first || Message.where(:id => @id).first
+      @message ||= Message.in_partition('id' => id, 'created_at' => @created_at).where(:id => @id, :created_at => @created_at).first || Message.where(:id => @id).first
     end
   end
 
@@ -104,7 +104,7 @@ class Message < ActiveRecord::Base
     state :created do
       event :stage, :transitions_to => :staged do
         self.dispatch_at = Time.now.utc + self.delay_for
-        if self.to != 'dashboard' && !@stage_without_dispatch
+        if self.to != 'dashboard'
           MessageDispatcher.dispatch(self)
         end
       end
@@ -179,7 +179,7 @@ class Message < ActiveRecord::Base
     self.shard.activate do
       self.updated_at = Time.now.utc
       updates = Hash[self.changes_to_save.map{|k, v| [k, v.last]}]
-      self.class.where(:id => self.id, :created_at => self.created_at).update_all(updates)
+      self.class.in_partition(attributes).where(:id => self.id, :created_at => self.created_at).update_all(updates)
       self.clear_changes_information
     end
   end
@@ -188,6 +188,7 @@ class Message < ActiveRecord::Base
   scope :for, lambda { |context| where(:context_type => context.class.base_class.to_s, :context_id => context) }
 
   scope :after, lambda { |date| where("messages.created_at>?", date) }
+  scope :more_recent_than, lambda { |date| where("messages.created_at>? AND messages.dispatch_at>?", date, date) }
 
   scope :to_dispatch, -> {
     where("messages.workflow_state='staged' AND messages.dispatch_at<=? AND 'messages.to'<>'dashboard'", Time.now.utc)
@@ -216,6 +217,29 @@ class Message < ActiveRecord::Base
   scope :in_state, lambda { |state| where(:workflow_state => Array(state).map(&:to_s)) }
 
   scope :at_timestamp, lambda { |timestamp| where("created_at >= ? AND created_at < ?", Time.at(timestamp.to_i), Time.at(timestamp.to_i + 1)) }
+
+  # an optimization for queries that would otherwise target the main table to
+  # make them target the specific partition table. Naturally this only works if
+  # the records all reside within the same partition!!!
+  #
+  # for example, this takes us from:
+  #
+  #     Message.where(id: 3)
+  #     => SELECT "messages".* FROM "messages" WHERE "messages"."id" = 3
+  # to:
+  #
+  #     Message.in_partition(Message.last.attributes).where(id: 3)
+  #     => SELECT "messages_2020_35".* FROM "messages_2020_35" WHERE "messages_2020_35"."id" = 3
+  #
+  scope :in_partition, lambda { |attrs|
+    dup.instance_eval do
+      tap do
+        @table = klass.arel_table_from_key_values(attrs)
+        @predicate_builder = predicate_builder.dup
+        @predicate_builder.instance_variable_set('@table', ActiveRecord::TableMetadata.new(klass, @table))
+      end
+    end
+  }
 
   #Public: Helper methods for grabbing a user via the "from" field and using it to
   #populate the avatar, name, and email in the conversation email notification
@@ -299,6 +323,28 @@ class Message < ActiveRecord::Base
     end
   end
 
+  # overwrite existing html_to_text so that messages with links can have the ids
+  # translated to be shard aware while preserving the link_root_account for the
+  # host.
+  def html_to_text(html, *opts)
+    super(transpose_url_ids(html), *opts)
+  end
+
+  # overwrite existing html_to_simple_html so that messages with links can have
+  # the ids translated to be shard aware while preserving the link_root_account
+  # for the host.
+  def html_to_simple_html(html, *opts)
+    super(transpose_url_ids(html), *opts)
+  end
+
+  def transpose_url_ids(html)
+    url_helper = Api::Html::UrlProxy.new(self, self.context,
+                                         HostUrl.context_host(self.link_root_account),
+                                         HostUrl.protocol,
+                                         target_shard: self.link_root_account.shard)
+    Api::Html::Content.rewrite_outgoing(html, self.link_root_account, url_helper)
+  end
+
   # infer a root account associated with the context that the user can log in to
   def link_root_account
     @root_account ||= begin
@@ -362,7 +408,9 @@ class Message < ActiveRecord::Base
   #
   # Returns nothing.
   def stage_without_dispatch!
-    @stage_without_dispatch = true
+    return if state == :bounced
+    self.dispatch_at = Time.now.utc + self.delay_for
+    self.workflow_state = 'staged'
   end
 
   # Public: Stage the message during the dispatch process. Messages travel
@@ -508,7 +556,10 @@ class Message < ActiveRecord::Base
       footer_path = Canvas::MessageHelper.find_message_path('_email_footer.email.erb')
       raw_footer_message = File.read(footer_path)
       footer_message = eval(Erubi::Engine.new(raw_footer_message, :bufvar => "@output_buffer").src, nil, footer_path)
-      if footer_message.present?
+      # currently, _email_footer.email.erb only contains a way for users to change notification prefs
+      # they can only change it if they are registered in the first place
+      # do not show this for emails telling users to register
+      if footer_message.present? && !self.notification&.registration?
         self.body = <<-END.strip_heredoc
           #{self.body}
 
@@ -598,11 +649,26 @@ class Message < ActiveRecord::Base
       return nil
     end
 
+    check_acct = root_account || user&.account || Account.site_admin
+    if path_type == 'sms' && !check_acct.settings[:sms_allowed] && Account.site_admin.feature_enabled?(:deprecate_sms)
+      if Notification.types_to_send_in_sms(check_acct).exclude?(notification_name)
+        InstStatsd::Statsd.increment("message.skip.#{path_type}.#{notification_name}",
+                                     short_stat: 'message.skip',
+                                     tags: {path_type: path_type, notification_name: notification_name})
+        self.destroy
+        return nil
+      end
+    end
+
     InstStatsd::Statsd.increment("message.deliver.#{path_type}.#{notification_name}",
                                  short_stat: 'message.deliver',
                                  tags: {path_type: path_type, notification_name: notification_name})
 
-    check_acct = user&.account || Account.site_admin
+    global_account_id = Shard.global_id_for(root_account_id, self.shard)
+    InstStatsd::Statsd.increment("message.deliver.#{path_type}.#{global_account_id}",
+                                 short_stat: 'message.deliver_per_account',
+                                 tags: {path_type: path_type, root_account_id: global_account_id})
+
     if check_acct.feature_enabled?(:notification_service)
       enqueue_to_sqs
     else
@@ -621,15 +687,21 @@ class Message < ActiveRecord::Base
   def enqueue_to_sqs
     targets = notification_targets
     if targets.empty?
+      # Log no_targets_specified error to DataDog
+      InstStatsd::Statsd.increment("message.no_targets_specified",
+                                   short_stat: 'message.no_targets_specified',
+                                   tags: {path_type: path_type})
+
       self.transmission_errors = "No notification targets specified"
       self.set_transmission_error
-    else
+  else
       targets.each do |target|
         Services::NotificationService.process(
           notification_service_id,
           notification_message,
           path_type,
-          target
+          target,
+          self.notification&.priority?
         )
       end
       complete_dispatch
@@ -676,7 +748,7 @@ class Message < ActiveRecord::Base
   def notification_targets
     case path_type
     when "push"
-      self.user.notification_endpoints.map(&:arn)
+      self.user.notification_endpoints.pluck(:arn)
     when "twitter"
       twitter_service = user.user_services.where(service: 'twitter').first
       [
@@ -720,6 +792,10 @@ class Message < ActiveRecord::Base
   #
   # Returns an account.
   def context_root_account
+    if context.is_a?(AccountNotification)
+      return context.account.root_account
+    end
+
     unbounded_loop_paranoia_counter = 10
     current_context                 = context
 

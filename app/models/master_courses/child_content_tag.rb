@@ -18,6 +18,10 @@
 class MasterCourses::ChildContentTag < ActiveRecord::Base
   # can never have too many content tags
 
+  # stores change data on the associated course
+  # i.e. which objects were changed from their blueprint versions and what columns (and pseudo-columns)
+  # so we don't overwrite intentional changes during a sync (unless the object gets locked)
+
   belongs_to :child_subscription, :class_name => "MasterCourses::ChildSubscription"
 
   belongs_to :content, polymorphic: [:assessment_question_bank,
@@ -36,13 +40,20 @@ class MasterCourses::ChildContentTag < ActiveRecord::Base
                                      :wiki_page,
                                      quiz: 'Quizzes::Quiz'
   ]
+  belongs_to :root_account, :class_name => 'Account'
+
   validates_with MasterCourses::TagValidator
 
   serialize :downstream_changes, Array # an array of changed columns
 
   before_create :set_migration_id
+  before_create :set_root_account_id
 
   def set_migration_id
     self.migration_id ||= content.migration_id if content.respond_to?(:migration_id)
+  end
+
+  def set_root_account_id
+    self.root_account_id ||= self.child_subscription.root_account_id
   end
 end

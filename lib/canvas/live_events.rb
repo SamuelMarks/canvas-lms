@@ -45,6 +45,21 @@ module Canvas::LiveEvents
     ctx
   end
 
+  def self.conversation_created(conversation)
+    post_event_stringified('conversation_created', {
+      conversation_id: conversation.id,
+      updated_at: conversation.updated_at
+    })
+  end
+
+  def self.conversation_forwarded(conversation)
+    post_event_stringified('conversation_forwarded', {
+      conversation_id: conversation.id,
+      updated_at: conversation.updated_at
+      },
+      amended_context(nil))
+  end
+
   def self.get_course_data(course)
     {
       course_id: course.global_id,
@@ -70,6 +85,15 @@ module Canvas::LiveEvents
       course_id: course.global_id,
       syllabus_body: LiveEvents.truncate(course.syllabus_body),
       old_syllabus_body: LiveEvents.truncate(old_syllabus_body)
+    })
+  end
+
+  def self.conversation_message_created(conversation_message)
+    post_event_stringified('conversation_message_created', {
+      author_id: conversation_message.author_id,
+      conversation_id: conversation_message.conversation_id,
+      created_at: conversation_message.created_at,
+      message_id: conversation_message.id
     })
   end
 
@@ -193,7 +217,7 @@ module Canvas::LiveEvents
   end
 
   def self.get_assignment_data(assignment)
-    {
+    event = {
       assignment_id: assignment.global_id,
       context_id: assignment.global_context_id,
       context_uuid: assignment.context.uuid,
@@ -212,6 +236,20 @@ module Canvas::LiveEvents
       lti_resource_link_id_duplicated_from: assignment.duplicate_of&.lti_resource_link_id,
       submission_types: assignment.submission_types
     }
+    actl = assignment.assignment_configuration_tool_lookups.take
+    domain = assignment.root_account&.domain(ApplicationController.test_cluster_name)
+    event[:domain] = domain if domain
+    if actl
+      if (tool_proxy = Lti::ToolProxy.proxies_in_order_by_codes(
+        context: assignment.course,
+        vendor_code: actl.tool_vendor_code,
+        product_code: actl.tool_product_code,
+        resource_type_code: actl.tool_resource_type_code
+      ).first)
+        event[:associated_integration_id] = [actl.tool_vendor_code, actl.tool_product_code, tool_proxy.event_endpoint].join('_')
+      end
+    end
+    event
   end
 
   def self.assignment_created(assignment)
@@ -249,6 +287,10 @@ module Canvas::LiveEvents
     Assignment.where(:id => assignment_ids).each{|a| assignment_updated(a)}
   end
 
+  def self.submissions_bulk_updated(submissions)
+    Submission.where(id: submissions).preload(:assignment).find_each { |submission| submission_updated(submission) }
+  end
+
   def self.get_assignment_override_data(override)
     data_hash = {
       assignment_override_id: override.id,
@@ -281,7 +323,7 @@ module Canvas::LiveEvents
   end
 
   def self.get_submission_data(submission)
-    {
+    event = {
       submission_id: submission.global_id,
       assignment_id: submission.global_assignment_id,
       user_id: submission.global_user_id,
@@ -298,8 +340,26 @@ module Canvas::LiveEvents
       late: submission.late?,
       missing: submission.missing?,
       lti_assignment_id: submission.assignment.lti_context_id,
-      group_id: submission.group_id
+      group_id: submission.group_id,
+      posted_at: submission.posted_at,
+      workflow_state: submission.workflow_state,
     }
+    actl = submission.assignment.assignment_configuration_tool_lookups.take
+    if actl
+      if (tool_proxy = Lti::ToolProxy.proxies_in_order_by_codes(
+        context: submission.course,
+        vendor_code: actl.tool_vendor_code,
+        product_code: actl.tool_product_code,
+        resource_type_code: actl.tool_resource_type_code
+      ).first)
+        event[:associated_integration_id] = [actl.tool_vendor_code, actl.tool_product_code, tool_proxy.event_endpoint].join('_')
+      end
+    end
+    event
+  end
+
+  def self.submission_event(event_type, submission)
+    post_event_stringified(event_type, get_submission_data(submission), amended_context(submission.context))
   end
 
   def self.get_attachment_data(attachment)
@@ -319,11 +379,11 @@ module Canvas::LiveEvents
   end
 
   def self.submission_created(submission)
-    post_event_stringified('submission_created', get_submission_data(submission))
+    submission_event('submission_created', submission)
   end
 
   def self.submission_updated(submission)
-    post_event_stringified('submission_updated', get_submission_data(submission))
+    submission_event('submission_updated', submission)
   end
 
   def self.submission_comment_created(comment)
@@ -339,7 +399,7 @@ module Canvas::LiveEvents
   end
 
   def self.plagiarism_resubmit(submission)
-    post_event_stringified('plagiarism_resubmit', get_submission_data(submission))
+    submission_event('plagiarism_resubmit', submission)
   end
 
   def self.get_user_data(user)
@@ -501,7 +561,9 @@ module Canvas::LiveEvents
       grader_id = submission.global_grader_id
     end
 
-    sis_pseudonym = SisPseudonym.for(submission.user, submission.assignment.context, type: :trusted, require_sis: false)
+    sis_pseudonym = GuardRail.activate(:secondary) do
+      SisPseudonym.for(submission.user, submission.assignment.context, type: :trusted, require_sis: false)
+    end
 
     post_event_stringified('grade_change', {
       submission_id: submission.global_id,
@@ -571,7 +633,7 @@ module Canvas::LiveEvents
     context = content_migration.context
     import_quizzes_next =
       content_migration.migration_settings&.[](:import_quizzes_next) == true
-    {
+    payload = {
       content_migration_id: content_migration.global_id,
       context_id: context.global_id,
       context_type: context.class.to_s,
@@ -579,6 +641,12 @@ module Canvas::LiveEvents
       context_uuid: context.uuid,
       import_quizzes_next: import_quizzes_next
     }
+
+    if context.respond_to?(:root_account)
+      payload[:domain] = context.root_account&.domain(ApplicationController.test_cluster_name)
+    end
+
+    payload
   end
 
   def self.course_section_created(section)
@@ -664,8 +732,8 @@ module Canvas::LiveEvents
   def self.get_course_completed_data(course, user)
     {
       progress: CourseProgress.new(course, user, read_only: true).to_json,
-      user: { id: user.id, name: user.name, email: user.email },
-      course: { id: course.id, name: course.name }
+      user: user.slice(%i[id name email]),
+      course: course.slice(%i[id name account_id sis_source_id])
     }
   end
 
@@ -807,5 +875,56 @@ module Canvas::LiveEvents
 
   def self.sis_batch_updated(batch)
     post_event_stringified('sis_batch_updated', sis_batch_payload(batch))
+  end
+
+  def self.outcome_proficiency_created(proficiency)
+    post_event_stringified('outcome_proficiency_created', get_outcome_proficiency_data(proficiency))
+  end
+
+  def self.outcome_proficiency_updated(proficiency)
+    post_event_stringified('outcome_proficiency_updated', get_outcome_proficiency_data(proficiency).merge(updated_at: proficiency.updated_at))
+  end
+
+  def self.get_outcome_proficiency_data(proficiency)
+    ratings = proficiency.outcome_proficiency_ratings.map do |rating|
+      get_outcome_proficiency_rating_data(rating)
+    end
+    {
+      outcome_proficiency_id: proficiency.id,
+      context_type: proficiency.context_type,
+      context_id: proficiency.context_id,
+      workflow_state: proficiency.workflow_state,
+      outcome_proficiency_ratings: ratings
+    }
+  end
+
+  def self.get_outcome_proficiency_rating_data(rating)
+    {
+      outcome_proficiency_rating_id: rating.id,
+      description: rating.description,
+      points: rating.points,
+      mastery: rating.mastery,
+      color: rating.color,
+      workflow_state: rating.workflow_state
+    }
+  end
+
+  def self.outcome_calculation_method_created(method)
+    post_event_stringified('outcome_calculation_method_created', get_outcome_calculation_method_data(method))
+  end
+
+  def self.outcome_calculation_method_updated(method)
+    post_event_stringified('outcome_calculation_method_updated', get_outcome_calculation_method_data(method).merge(updated_at: method.updated_at))
+  end
+
+  def self.get_outcome_calculation_method_data(method)
+    {
+      outcome_calculation_method_id: method.id,
+      context_type: method.context_type,
+      context_id: method.context_id,
+      workflow_state: method.workflow_state,
+      calculation_method: method.calculation_method,
+      calculation_int: method.calculation_int
+    }
   end
 end

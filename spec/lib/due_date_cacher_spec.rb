@@ -29,6 +29,13 @@ describe DueDateCacher do
       @instance = double('instance', :recompute => nil)
     end
 
+    it "doesn't call self.recompute_course if the assignment passed in hasn't been persisted" do
+      expect(DueDateCacher).not_to receive(:recompute_course)
+
+      assignment = Assignment.new(course: @course, workflow_state: :published)
+      DueDateCacher.recompute(assignment)
+    end
+
     it "wraps assignment in an array" do
       expect(DueDateCacher).to receive(:new).with(@course, [@assignment.id], hash_including(update_grades: false)).
         and_return(@instance)
@@ -977,6 +984,21 @@ describe DueDateCacher do
         cacher.recompute
         expect(submission).to be_cached_quiz_lti
       end
+    end
+
+    describe "root_account_id" do
+      it "is set to the associated course's root account ID" do
+        new_student = user_model
+        @course.enroll_user(new_student)
+
+        submission = @assignment.submission_for_student(new_student)
+        expect(submission.root_account_id).to eq @assignment.course.root_account_id
+      end
+    end
+
+    it "should add course_id" do
+      cacher.recompute
+      expect(submission.course_id).to eq @course.id
     end
   end
 

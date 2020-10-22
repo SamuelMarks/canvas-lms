@@ -66,12 +66,11 @@ module SeleniumErrorRecovery
       # no sense trying anymore, give up and hope that other nodes pick up the slack
       puts "Error: got `#{exception}`, aborting"
       RSpec.world.wants_to_quit = true
-    when EOFError, Errno::ECONNREFUSED, Net::ReadTimeout
+    when EOFError, Errno::ECONNREFUSED, Net::ReadTimeout, Selenium::WebDriver::Error::UnknownError
       return false if SeleniumDriverSetup.saucelabs_test_run?
       return false if RSpec.world.wants_to_quit
-      return false unless exception.backtrace.grep(/selenium-webdriver/).present?
+      return false if exception.backtrace.grep(/selenium-webdriver/).blank?
 
-      puts "SELENIUM: webdriver is misbehaving.  Will try to re-initialize."
       SeleniumDriverSetup.reset!
       return true
     end
@@ -89,7 +88,8 @@ if defined?(TestQueue::Runner::RSpec::LazyGroups)
 else
   RSpec.configure do |config|
     config.before :suite do
-      SeleniumDriverSetup.run
+      # For flakey spec catcher: if server and driver are already initialized, reuse instead of starting another instance
+      SeleniumDriverSetup.run unless SeleniumDriverSetup.server.present? && SeleniumDriverSetup.driver.present?
     end
   end
 end
@@ -113,6 +113,12 @@ shared_context "in-process server selenium tests" do
 
   # set up so you can use rails urls helpers in your selenium tests
   include Rails.application.routes.url_helpers
+
+  prepend_before :all do
+    # building the schema is currently very slow.
+    # this ensures the schema is built before specs are run to avoid timeouts
+    CanvasSchema.graphql_definition
+  end
 
   prepend_before :each do
     resize_screen_to_standard
@@ -154,7 +160,7 @@ shared_context "in-process server selenium tests" do
 
   # synchronize db connection methods for a modicum of thread safety
   module SynchronizeConnection
-    %w{execute exec_cache exec_no_cache query transaction}.each do |method|
+    %w{cache_sql execute exec_cache exec_no_cache query transaction}.each do |method|
       class_eval <<-RUBY, __FILE__, __LINE__ + 1
         def #{method}(*)
           SeleniumDriverSetup.request_mutex.synchronize { super }
@@ -191,6 +197,22 @@ shared_context "in-process server selenium tests" do
       # we want to ignore selenium errors when attempting to wait here
     ensure
       SeleniumDriverSetup.disallow_requests!
+    end
+
+    # we don't want to combine this into the above block to avoid x-test pollution
+    # if a previous step fails
+    begin
+      clear_local_storage
+    rescue Selenium::WebDriver::Error::WebDriverError
+      # we want to ignore selenium errors when attempting to wait here
+    end
+
+    # we don't want to combine this into the above block to avoid x-test pollution
+    # if a previous step fails
+    begin
+      driver.session_storage.clear
+    rescue Selenium::WebDriver::Error::WebDriverError
+      # we want to ignore selenium errors when attempting to wait here
     end
 
     if SeleniumDriverSetup.saucelabs_test_run?
@@ -264,6 +286,7 @@ shared_context "in-process server selenium tests" do
         "Uncaught Error: Not Found", # for canvas-rce when no backend is set up
         "Uncaught Error: Minified React error #188",
         "Uncaught Error: Minified React error #200", # this is coming from canvas-rce, but we should fix it
+        "Uncaught Error: Loading chunk", # probably happens when the test ends when the browser is still loading some JS
         "Access to Font at 'http://cdnjs.cloudflare.com/ajax/libs/mathjax/",
         "Access to XMLHttpRequest at 'http://www.example.com/' from origin",
         "The user aborted a request" # The server doesn't respond fast enough sometimes and requests can be aborted. For example: when a closing a dialog.

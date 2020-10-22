@@ -19,8 +19,9 @@
 import I18n from 'i18n!course_and_module_picker'
 
 import React from 'react'
-import {func, string} from 'prop-types'
-import {Flex} from '@instructure/ui-flex'
+import {func, string, bool} from 'prop-types'
+import {View} from '@instructure/ui-view'
+import {Text} from '@instructure/ui-text'
 
 import useManagedCourseSearchApi from '../effects/useManagedCourseSearchApi'
 import useModuleCourseSearchApi from '../effects/useModuleCourseSearchApi'
@@ -32,7 +33,8 @@ CourseAndModulePicker.propTypes = {
   setSelectedCourse: func,
   selectedModuleId: string,
   setSelectedModule: func,
-  setModuleItemPosition: func
+  setModuleItemPosition: func,
+  disableModuleInsertion: bool
 }
 
 export default function CourseAndModulePicker({
@@ -40,38 +42,55 @@ export default function CourseAndModulePicker({
   setSelectedCourse,
   selectedModuleId,
   setSelectedModule,
-  setModuleItemPosition
+  setModuleItemPosition,
+  disableModuleInsertion
 }) {
   return (
     <>
-      <Flex direction="column">
-        <Flex.Item padding="small">
+      <View as="div" padding="0 0 small 0">
+        <SearchItemSelector
+          onItemSelected={setSelectedCourse}
+          renderLabel={I18n.t('Select a Course')}
+          itemSearchFunction={useManagedCourseSearchApi}
+          renderOption={item => {
+            return (
+              <View>
+                {item.name}
+                <View as="p" margin="none" padding="none">
+                  <Text size="small">{item.course_code}</Text>
+                </View>
+              </View>
+            )
+          }}
+        />
+      </View>
+      <View as="div" padding="0 0 small 0">
+        {selectedCourseId && !disableModuleInsertion && (
           <SearchItemSelector
-            onItemSelected={setSelectedCourse}
-            renderLabel={I18n.t('Select a Course')}
-            itemSearchFunction={useManagedCourseSearchApi}
+            onItemSelected={setSelectedModule}
+            renderLabel={I18n.t('Select a Module (optional)')}
+            itemSearchFunction={useModuleCourseSearchApi}
+            contextId={selectedCourseId || null}
+            renderOption={item => {
+              return (
+                <View>
+                  {item.name}
+                  <View as="p" margin="none" padding="none">
+                    <Text size="small">{item.course_code}</Text>
+                  </View>
+                </View>
+              )
+            }}
           />
-        </Flex.Item>
-        {selectedCourseId && (
-          <Flex.Item padding="small">
-            <SearchItemSelector
-              onItemSelected={setSelectedModule}
-              renderLabel={I18n.t('Select a Module (optional)')}
-              itemSearchFunction={useModuleCourseSearchApi}
-              contextId={selectedCourseId || null}
-            />
-          </Flex.Item>
         )}
-        {selectedCourseId && selectedModuleId && (
-          <Flex.Item padding="small">
-            <ModulePositionPicker
-              courseId={selectedCourseId || null}
-              moduleId={selectedModuleId || null}
-              setModuleItemPosition={setModuleItemPosition}
-            />
-          </Flex.Item>
-        )}
-      </Flex>
+      </View>
+      {selectedCourseId && selectedModuleId && !disableModuleInsertion && (
+        <ModulePositionPicker
+          courseId={selectedCourseId || null}
+          moduleId={selectedModuleId || null}
+          setModuleItemPosition={setModuleItemPosition}
+        />
+      )}
     </>
   )
 }

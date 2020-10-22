@@ -22,11 +22,12 @@ import PropTypes from 'prop-types'
 import ExternalToolDialogModal from './ExternalToolDialog/Modal'
 import ExternalToolDialogTray from './ExternalToolDialog/Tray'
 import {Alert} from '@instructure/ui-alerts'
+import {Spinner} from '@instructure/ui-spinner'
 import I18n from 'i18n!ExternalToolDialog'
 import {send} from '../shared/rce/RceCommandShim'
 import TinyMCEContentItem from 'tinymce_plugins/instructure_external_tools/TinyMCEContentItem'
-import {Flex} from '@instructure/ui-layout'
 import processEditorContentItems from '../deep_linking/processors/processEditorContentItems'
+import {Flex} from '@instructure/ui-flex'
 
 const EMPTY_BUTTON = {
   height: 300,
@@ -72,7 +73,8 @@ export default class ExternalToolDialog extends React.Component {
     open: false,
     button: EMPTY_BUTTON,
     infoAlert: null,
-    form: EMPTY_FORM
+    form: EMPTY_FORM,
+    iframeLoaded: false
   }
 
   open(button) {
@@ -137,7 +139,9 @@ export default class ExternalToolDialog extends React.Component {
     }
   }
 
-  handleOpen = () => this.formRef.submit()
+  handleOpen = () => {
+    if (this.state.open) this.formRef.submit()
+  }
 
   handleRemove = () => {
     this.setState({button: EMPTY_BUTTON})
@@ -149,7 +153,7 @@ export default class ExternalToolDialog extends React.Component {
   handleInfoAlertBlur = () => this.setState({infoAlert: null})
 
   render() {
-    const {open, button, form, infoAlert} = this.state
+    const {open, button, form, infoAlert, iframeLoaded} = this.state
     const {iframeAllowances, win} = this.props
     const label = I18n.t('embed_from_external_tool', 'Embed content from External Tool')
     const frameHeight = Math.max(Math.min(win.height - 100, 550), 100)
@@ -173,52 +177,58 @@ export default class ExternalToolDialog extends React.Component {
           onOpen={this.handleOpen}
           onClose={this.handleRemove}
           onCloseButton={this.handleClose}
-          closeLabel={I18n.t('Close')}
           name={button.name}
         >
-          <Flex.Item>
-            <div
-              ref={ref => (this.beforeInfoAlertRef = ref)}
-              tabIndex="0" // eslint-disable-line jsx-a11y/no-noninteractive-tabindex
-              onFocus={this.handleInfoAlertFocus}
-              onBlur={this.handleInfoAlertBlur}
-              className={
-                infoAlert && infoAlert === this.beforeInfoAlertRef ? '' : 'screenreader-only'
-              }
-            >
-              <Alert margin="small">{I18n.t('The following content is partner provided')}</Alert>
-            </div>
-          </Flex.Item>
+          <div
+            ref={ref => (this.beforeInfoAlertRef = ref)}
+            tabIndex="0" // eslint-disable-line jsx-a11y/no-noninteractive-tabindex
+            onFocus={this.handleInfoAlertFocus}
+            onBlur={this.handleInfoAlertBlur}
+            className={
+              infoAlert && infoAlert === this.beforeInfoAlertRef ? '' : 'screenreader-only'
+            }
+          >
+            <Alert margin="small">{I18n.t('The following content is partner provided')}</Alert>
+          </div>
+          {!iframeLoaded && (
+            <Flex alignItems="center" justifyItems="center">
+              <Flex.Item>
+                <Spinner
+                  renderTitle={I18n.t('Loading External Tool')}
+                  size="large"
+                  margin="0 0 0 medium"
+                />
+              </Flex.Item>
+            </Flex>
+          )}
+
           <iframe
             title={label}
             ref={ref => (this.iframeRef = ref)}
             name="external_tool_launch"
-            src="/images/ajax-loader-medium-444.gif"
+            src=""
             id="external_tool_button_frame"
             style={{
-              flexGrow: '1',
-              flexShrink: '1',
-              width: button.use_tray ? undefined : button.width || 800,
-              height: button.use_tray ? undefined : button.height || frameHeight,
-              border: '0'
+              width: button.use_tray ? '100%' : button.width || 800,
+              height: button.use_tray ? '100%' : button.height || frameHeight,
+              border: '0',
+              display: 'block',
+              visibility: iframeLoaded ? 'visible' : 'hidden'
             }}
             allow={iframeAllowances}
             borderstyle="0"
             data-lti-launch="true"
+            onLoad={() => this.setState({iframeLoaded: true})}
           />
-          <Flex.Item>
-            <div
-              ref={ref => (this.afterInfoAlertRef = ref)}
-              tabIndex="0" // eslint-disable-line jsx-a11y/no-noninteractive-tabindex
-              onFocus={this.handleInfoAlertFocus}
-              onBlur={this.handleInfoAlertBlur}
-              className={
-                infoAlert && infoAlert === this.afterInfoAlertRef ? '' : 'screenreader-only'
-              }
-            >
-              <Alert margin="small">{I18n.t('The preceding content is partner provided')}</Alert>
-            </div>
-          </Flex.Item>
+          <div
+            ref={ref => (this.afterInfoAlertRef = ref)}
+            tabIndex="0" // eslint-disable-line jsx-a11y/no-noninteractive-tabindex
+            onFocus={this.handleInfoAlertFocus}
+            onBlur={this.handleInfoAlertBlur}
+            className={infoAlert && infoAlert === this.afterInfoAlertRef ? '' : 'screenreader-only'}
+          >
+            <Alert margin="small">{I18n.t('The preceding content is partner provided')}</Alert>
+          </div>
         </Overlay>
       </>
     )

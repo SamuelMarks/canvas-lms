@@ -45,6 +45,11 @@ module Api::V1::Attachment
       'filename' => attachment.filename,
       'upload_status' => AttachmentUploadStatus.upload_status(attachment)
     }
+
+    if options[:master_course_status]
+      hash.merge!(attachment.master_course_api_restriction_data(options[:master_course_status]))
+    end
+
     return hash if options[:only] && options[:only].include?('names')
 
     options.reverse_merge!(skip_permission_checks: false)
@@ -85,6 +90,10 @@ module Api::V1::Attachment
         h.merge!(:verifier => attachment.uuid) unless options[:omit_verifier_in_app] && (respond_to?(:in_app?, true) && in_app? || @authenticated_with_jwt)
         url = file_download_url(attachment, h.merge(url_options))
       end
+       # and svg can stand in as its own thumbnail, but let's be reasonable about their size
+       if !thumbnail_url && attachment.content_type == 'image/svg+xml' && attachment.size < 16_384 #16k
+        thumbnail_url = url
+      end
     else
       thumbnail_url = ''
       url = ''
@@ -120,7 +129,7 @@ module Api::V1::Attachment
     if includes.include? 'preview_url'
 
       url_opts = {
-        moderated_grading_whitelist: options[:moderated_grading_whitelist],
+        moderated_grading_allow_list: options[:moderated_grading_allow_list],
         enable_annotations: options[:enable_annotations],
         enrollment_type: options[:enrollment_type],
         anonymous_instructor_annotations: options[:anonymous_instructor_annotations],
@@ -149,10 +158,6 @@ module Api::V1::Attachment
       # and is not documented as a publicly available api option.
       # It may be removed at any time.
       hash['instfs_uuid'] = attachment.instfs_uuid
-    end
-
-    if options[:master_course_status]
-      hash.merge!(attachment.master_course_api_restriction_data(options[:master_course_status]))
     end
 
     hash

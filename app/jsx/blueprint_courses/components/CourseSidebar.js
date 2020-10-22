@@ -24,7 +24,8 @@ import {bindActionCreators} from 'redux'
 import select from '../../shared/select'
 
 import {Button} from '@instructure/ui-buttons'
-import {Text, Spinner} from '@instructure/ui-elements'
+import {Text} from '@instructure/ui-elements'
+import {Spinner} from '@instructure/ui-spinner'
 import {Tooltip} from '@instructure/ui-overlays'
 import {PresentationContent} from '@instructure/ui-a11y'
 
@@ -49,8 +50,12 @@ export default class CourseSidebar extends Component {
     associations: propTypes.courseList.isRequired,
     migrationStatus: propTypes.migrationState,
     canManageCourse: PropTypes.bool.isRequired,
+    canAutoPublishCourses: PropTypes.bool.isRequired,
     hasLoadedAssociations: PropTypes.bool.isRequired,
     hasAssociationChanges: PropTypes.bool.isRequired,
+    willAddAssociations: PropTypes.bool.isRequired,
+    willPublishCourses: PropTypes.bool.isRequired,
+    enablePublishCourses: PropTypes.func.isRequired,
     isSavingAssociations: PropTypes.bool.isRequired,
     isLoadingUnsyncedChanges: PropTypes.bool.isRequired,
     hasLoadedUnsyncedChanges: PropTypes.bool.isRequired,
@@ -108,6 +113,10 @@ export default class CourseSidebar extends Component {
         hasChanges: this.props.hasAssociationChanges,
         isSaving: this.props.isSavingAssociations,
         onSave: this.props.saveAssociations,
+        canAutoPublishCourses: this.props.canAutoPublishCourses,
+        willAddAssociations: this.props.willAddAssociations,
+        willPublishCourses: this.props.willPublishCourses,
+        enablePublishCourses: this.props.enablePublishCourses,
         onCancel: () =>
           this.closeModal(() => {
             this.asscBtn.focus()
@@ -381,6 +390,8 @@ const connectState = state =>
   Object.assign(
     select(state, [
       'canManageCourse',
+      'canAutoPublishCourses',
+      'willPublishCourses',
       'hasLoadedAssociations',
       'isLoadingBeginMigration',
       'isSavingAssociations',
@@ -391,11 +402,9 @@ const connectState = state =>
       'migrationStatus'
     ]),
     {
-      hasAssociationChanges: state.addedAssociations.length + state.removedAssociations.length > 0
+      hasAssociationChanges: state.addedAssociations.length + state.removedAssociations.length > 0,
+      willAddAssociations: state.addedAssociations.length > 0
     }
   )
 const connectActions = dispatch => bindActionCreators(actions, dispatch)
-export const ConnectedCourseSidebar = connect(
-  connectState,
-  connectActions
-)(CourseSidebar)
+export const ConnectedCourseSidebar = connect(connectState, connectActions)(CourseSidebar)

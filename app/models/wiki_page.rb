@@ -48,6 +48,7 @@ class WikiPage < ActiveRecord::Base
   belongs_to :user
 
   belongs_to :context, polymorphic: [:course, :group]
+  belongs_to :root_account, :class_name => 'Account'
 
   acts_as_url :title, :sync_url => true
 
@@ -58,6 +59,7 @@ class WikiPage < ActiveRecord::Base
   before_save :set_revised_at
   before_validation :ensure_wiki_and_context
   before_validation :ensure_unique_title
+  before_create :set_root_account_id
 
   after_save  :touch_context
   after_save  :update_assignment,
@@ -79,12 +81,13 @@ class WikiPage < ActiveRecord::Base
   end
 
   scope :visible_to_user, -> (user_id) do
-    joins(sanitize_sql(["LEFT JOIN #{AssignmentStudentVisibility.quoted_table_name} as asv on wiki_pages.assignment_id = asv.assignment_id AND asv.user_id = ?", user_id])).
-      where("wiki_pages.assignment_id IS NULL OR asv IS NOT NULL")
+    where("wiki_pages.assignment_id IS NULL OR EXISTS (SELECT 1 FROM #{AssignmentStudentVisibility.quoted_table_name} asv WHERE wiki_pages.assignment_id = asv.assignment_id AND asv.user_id = ?)", user_id)
   end
 
   TITLE_LENGTH = 255
   SIMPLY_VERSIONED_EXCLUDE_FIELDS = [:workflow_state, :editing_roles, :notify_of_update].freeze
+
+  self.ignored_columns = %i[view_count]
 
   def ensure_wiki_and_context
     self.wiki_id ||= (self.context.wiki_id || self.context.wiki.id)
@@ -332,6 +335,10 @@ class WikiPage < ActiveRecord::Base
     end
   end
 
+  def course_broadcast_data
+    context&.broadcast_data
+  end
+
   set_broadcast_policy do |p|
     p.dispatch :updated_wiki_page
     p.to { participants }
@@ -339,6 +346,7 @@ class WikiPage < ActiveRecord::Base
       BroadcastPolicies::WikiPagePolicy.new(wiki_page).
         should_dispatch_updated_wiki_page?
     end
+    p.data { course_broadcast_data }
   end
 
   def participants
@@ -386,18 +394,6 @@ class WikiPage < ActiveRecord::Base
     res
   end
 
-  def increment_view_count(user, context = nil)
-    Shackles.activate(:master) do
-      unless self.new_record?
-        self.with_versioning(false) do |p|
-          context ||= p.context
-          WikiPage.where(id: p).update_all("view_count=COALESCE(view_count, 0) + 1")
-          p.context_module_action(user, context, :read)
-        end
-      end
-    end
-  end
-
   def can_unpublish?
     return @can_unpublish unless @can_unpublish.nil?
     @can_unpublish = !is_front_page?
@@ -431,7 +427,6 @@ class WikiPage < ActiveRecord::Base
       :user_id => self.user_id,
       :protected_editing => self.protected_editing,
       :editing_roles => self.editing_roles,
-      :view_count => 0,
       :todo_date => self.todo_date
     })
     if self.assignment && opts_with_default[:duplicate_assignment]
@@ -472,5 +467,9 @@ class WikiPage < ActiveRecord::Base
           revised_at: self.revised_at
         })
     end
+  end
+
+  def set_root_account_id
+    self.root_account_id = self.context&.root_account_id unless self.root_account_id
   end
 end

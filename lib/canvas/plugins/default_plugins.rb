@@ -15,6 +15,15 @@
 # You should have received a copy of the GNU Affero General Public License along
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 
+Canvas::Plugin.register('apple', nil,
+                        name: 'Sign in with Apple',
+                        description: -> { t :description, 'Sign in With Apple'},
+                        website: 'https://developer.apple.com',
+                        author: 'Instructure',
+                        author_website: 'https://www.instructure.com',
+                        version: '1.0.0',
+                        settings_partial: 'plugins/apple_settings'
+)
 Canvas::Plugin.register('clever', nil,
   name: 'Clever',
   description: -> { t :description, 'Clever Login' },
@@ -155,6 +164,18 @@ Canvas::Plugin.register('big_blue_button', :web_conferencing, {
   :validator => 'BigBlueButtonValidator',
   :encrypted_settings => [:secret]
 })
+Canvas::Plugin.register('big_blue_button_fallback', nil, {
+  :name => lambda{ t :name, "BigBlueButton Fallback For Migration" },
+  :description => lambda{ t :description, "BigBlueButton previous settings to preserve recordings during migration" },
+  :website => 'http://bigbluebutton.org',
+  :author => 'Instructure',
+  :author_website => 'http://www.instructure.com',
+  :version => '1.0.0',
+  :settings_partial => 'plugins/big_blue_button_fallback_settings',
+  :validator => 'BigBlueButtonFallbackValidator',
+  :encrypted_settings => [:secret]
+})
+
 require_dependency 'cc/importer/cc_worker'
 Canvas::Plugin.register 'canvas_cartridge_importer', :export_system, {
   :name => lambda{ I18n.t 'canvas_cartridge_name', 'Canvas Cartridge Importer' },
@@ -263,9 +284,7 @@ Canvas::Plugin.register('sis_import', :sis, {
   :author_website => 'http://www.instructure.com',
   :version => '1.0.0',
   :settings_partial => 'plugins/sis_import_settings',
-  :settings => { :parallelism => 1,
-                 :minimum_rows_for_parallel => 1000,
-                 :queue_for_parallel_jobs => nil }
+  :settings => { :parallelism => 1 }
 })
 
 Canvas::Plugin.register('sessions', nil, {
@@ -395,8 +414,12 @@ Canvas::Plugin.register('inst_fs', nil, {
   :author => 'Instructure',
   :author_website => 'http://www.instructure.com',
   :version => '0.0.1',
-  :settings => nil,
-  :settings_partial => 'plugins/inst_fs_settings'
+  :settings => {
+    :migration_rate => 0,
+    :service_worker => false,
+  },
+  :settings_partial => 'plugins/inst_fs_settings',
+  :validator => 'InstFsValidator'
 })
 Canvas::Plugin.register('unsplash', nil, {
   name: lambda{ t :name, 'Unsplash' },
@@ -406,4 +429,15 @@ Canvas::Plugin.register('unsplash', nil, {
   version: '1.0.0',
   settings: { access_key: nil },
   settings_partial: 'plugins/unsplash_settings'
+})
+Canvas::Plugin.register('asset_user_access_logs', nil, {
+  name: lambda{ t :name, 'AUA Logger' },
+  description: lambda{ t :description, 'Minimize AUA write pressure' },
+  author: 'Instructure',
+  author_website: 'http://www.instructure.com',
+  version: '1.0.0',
+  settings: {
+    max_log_ids: [0,0,0,0,0,0,0], # one for each day of week (table "partition")
+    write_path: 'update' # member of { update, log }
+  }
 })

@@ -63,11 +63,8 @@
     <div class="headerBar">
       <div class="form-inline" style="overflow: visible;">
         <div id="keyboard-shortcut-modal-info" tabindex="0">
-          <span aria-hidden="true" class="accessibility-warning">
-            <%= t 'Press the comma key or shift + ? to see a list of keyboard shortcuts' %>
-          </span>
-          <span class="screenreader-only">
-            <%= t 'Press the comma key or shift + question mark to see a list of keyboard shortcuts' %>
+          <span class="accessibility-warning">
+            <%= t 'Press ALT + F8 to see a list of keyboard shortcuts' %>
           </span>
         </div>
         <div class="pull-right">
@@ -273,11 +270,15 @@
           <% end %>
         </div>
       </div>
-
       <div id="discussion-toolbar" class="toolbarView">
         <div class="headerBar" data-sticky>
+          <% if @domain_root_account.feature_enabled?(:responsive_awareness) %>
+          <div class="form-inline headerBar__layout">
+            <div class="headerBar__controls">
+          <% else %>
           <div class="row-fluid form-inline" style="overflow: visible;">
             <div class="span9">
+          <% end %>
               <label class="screenreader-only" for="discussion-search">
                 <%= t("Search entries or author") %>
               </label>
@@ -311,8 +312,11 @@
                 <span class="screenreader-only">Expand replies</span>
               </button>
             </div>
-
-            <div class="span3 right-align">
+            <% if @domain_root_account.feature_enabled?(:responsive_awareness) %>
+            <div class="discussion_subscribe headerBar__subscribe">
+            <% else %>
+            <div class="span3 right-align discussion_subscribe">
+            <% end %>
               <a href='#' class='btn topic-subscribe-button' data-tooltip="bottom"
                  title="<%= t('topic_subscribe_tooltip', 'You are unsubscribed and will not be notified of new comments') %>"
                  role="button"

@@ -422,17 +422,19 @@ class SubmissionsApiController < ApplicationController
 
     includes = Array(params[:include])
 
-    assignment_scope = @context.assignments.published
+    assignment_scope = @context.assignments.published.preload(:quiz, :discussion_topic, :post_policy)
     assignment_scope = assignment_scope.where(post_to_sis: true) if value_to_boolean(params[:post_to_sis])
     requested_assignment_ids = Array(params[:assignment_ids]).map(&:to_i)
     if requested_assignment_ids.present?
       assignment_scope = assignment_scope.where(:id => requested_assignment_ids)
     end
 
-    if params[:grading_period_id].present?
-      assignments = GradingPeriod.active.find(params[:grading_period_id]).assignments(assignment_scope)
-    else
-      assignments = assignment_scope.to_a
+    assignments = GuardRail.activate(:secondary) do
+      if params[:grading_period_id].present?
+        GradingPeriod.active.find(params[:grading_period_id]).assignments(@context, assignment_scope)
+      else
+        assignment_scope.to_a
+      end
     end
 
     if requested_assignment_ids.present? && (requested_assignment_ids - assignments.map(&:id)).present?
@@ -468,9 +470,7 @@ class SubmissionsApiController < ApplicationController
     end
 
     if params[:grouped].present?
-      if @context.root_account.feature_enabled?(:allow_postable_submission_comments) && @context.post_policies_enabled?
-        includes << "has_postable_comments"
-      end
+      includes << "has_postable_comments"
 
       # student_ids is either a subscope returning students in context visible to the caller,
       # or an array whose contents have been verified to be a subset of these
@@ -484,14 +484,14 @@ class SubmissionsApiController < ApplicationController
         submissions_scope = submissions_scope.where(:workflow_state => params[:workflow_state])
       end
 
-      submission_preloads = [:originality_reports, :quiz_submission]
+      submission_preloads = [:originality_reports, {:quiz_submission => :versions}]
       submission_preloads << :attachment unless params[:exclude_response_fields]&.include?("attachments")
       submissions = submissions_scope.preload(submission_preloads).to_a
 
       ActiveRecord::Associations::Preloader.new.preload(
         submissions,
         :submission_comments,
-        {select: [:hidden, :submission_id]}
+        SubmissionComment.select(:hidden, :submission_id)
       )
 
       bulk_load_attachments_and_previews(submissions)
@@ -555,7 +555,7 @@ class SubmissionsApiController < ApplicationController
       submissions = submissions.where(:workflow_state => params[:workflow_state]) if params[:workflow_state].present?
       submissions = submissions.where("submitted_at>?", submitted_since_date) if submitted_since_date
       submissions = submissions.where("graded_at>?", graded_since_date) if graded_since_date
-      submissions = submissions.preload(:user, :originality_reports, :quiz_submission)
+      submissions = submissions.preload(:user, :originality_reports, {:quiz_submission => :versions})
       submissions = submissions.preload(:attachment) unless params[:exclude_response_fields]&.include?('attachments')
 
       # this will speed up pagination for large collections when order_direction is asc

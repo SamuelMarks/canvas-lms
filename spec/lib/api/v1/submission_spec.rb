@@ -25,6 +25,8 @@ describe Api::V1::Submission do
       include Api::V1::Submission
       include Rails.application.routes.url_helpers
 
+      attr_writer :current_user
+
       private
 
       def default_url_options
@@ -504,16 +506,7 @@ describe Api::V1::Submission do
         fake_controller.submission_json(submission, assignment, user, session, context, [field], params)
       end
 
-      it "is included if the owning course has post policies enabled" do
-        posted_at = Time.zone.now
-        submission.update!(posted_at: posted_at)
-
-        assignment.course.enable_feature!(:new_gradebook)
-        PostPolicy.enable_feature!
-        expect(json.fetch('posted_at')).to eq posted_at
-      end
-
-      it "is included if the owning course does not have post policies enabled" do
+      it "is included" do
         posted_at = Time.zone.now
         submission.update!(posted_at: posted_at)
 
@@ -557,22 +550,31 @@ describe Api::V1::Submission do
     end
   end
 
-  describe '#submission_zip' do
+  describe "#submission_zip" do
     let(:attachment) { fake_controller.submission_zip(assignment) }
 
-    it 'locks the attachment if the assignment is anonymous and muted' do
-      assignment.muted = true
-      assignment.anonymous_grading = true
+    it "locks the attachment if the assignment anonymizes students" do
+      allow(assignment).to receive(:anonymize_students?).and_return(true)
       expect(attachment).to be_locked
     end
 
-    it 'does not lock the attachment if the assignment is anonymous and unmuted' do
-      assignment.anonymous_grading = true
+    it 'does not lock the attachment if the assignment is not anonymous' do
+      allow(assignment).to receive(:anonymize_students?).and_return(false)
       expect(attachment).not_to be_locked
     end
 
-    it 'does not lock the attachment if the assignment is not anonymous' do
-      expect(attachment).not_to be_locked
+    it "does not blow up when a quiz has a prior attachment" do
+      qsub = quiz_with_submission()
+      quiz = qsub.quiz
+      quiz.attachments.create!(
+        display_name: "submissions.zip",
+        uploaded_data: default_uploaded_data,
+        workflow_state: 'zipped',
+        user_id: user.id,
+        locked: quiz.anonymize_students?
+      )
+      fake_controller.current_user = user
+      expect(fake_controller.submission_zip(quiz)).to be_truthy
     end
   end
 end

@@ -348,7 +348,7 @@ class OutcomeResultsController < ApplicationController
   def user_rollups(opts = {})
     excludes = Api.value_to_array(params[:exclude]).uniq
     @results = find_results(opts).preload(:user)
-    outcome_results_rollups(@results, @users, excludes)
+    outcome_results_rollups(results: @results, users: @users, excludes: excludes, context: @context)
   end
 
   def remove_users_with_no_results
@@ -580,7 +580,13 @@ class OutcomeResultsController < ApplicationController
   def users_for_outcome_context
     # this only works for courses; when other context types are added, this will
     # need to treat them differently.
-    apply_sort_order(@context.all_students).select("users.*, #{User.sortable_name_order_by_clause('users')}").distinct
+    students = if @domain_root_account.feature_enabled?(:limit_section_visibility_in_lmgb)
+      @context.students_visible_to(@current_user, include: :priors)
+    else
+      @context.all_students
+    end
+
+    apply_sort_order(students).select("users.*, #{User.sortable_name_order_by_clause('users')}").distinct
   end
 
   def apply_sort_order(relation)

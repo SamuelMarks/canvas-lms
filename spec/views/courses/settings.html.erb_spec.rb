@@ -32,6 +32,27 @@ describe "courses/settings.html.erb" do
     assign(:course_settings_sub_navigation_tools, [])
   end
 
+  describe "Hide sections on course users page checkbox" do
+    before :once do
+      @course.root_account.enable_feature!(:hide_course_sections_from_students)
+    end
+
+    it "should not display checkbox for teacher when there is one section" do
+      view_context(@course, @user)
+      assign(:current_user, @user)
+      render
+      expect(response).to_not have_tag("input#course_hide_sections_on_course_users_page")
+    end
+
+    it "should display checkbox for teacher when there is more than one section" do
+      @course.course_sections.create!
+      view_context(@course, @user)
+      assign(:current_user, @user)
+      render
+      expect(response).to have_tag("input#course_hide_sections_on_course_users_page")
+    end
+  end
+
   describe "sis_source_id edit box" do
     it "should not show to teacher" do
       view_context(@course, @user)
@@ -118,7 +139,6 @@ describe "courses/settings.html.erb" do
 
   describe "Large Course settings" do
     before :once do
-      @course.enable_feature!(:new_gradebook)
       @course.root_account.enable_feature!(:filter_speed_grader_by_student_group)
     end
 
@@ -130,12 +150,6 @@ describe "courses/settings.html.erb" do
       @course.root_account.disable_feature!(:filter_speed_grader_by_student_group)
       render
       expect(response).not_to have_tag "input#course_filter_speed_grader_by_student_group"
-    end
-
-    it "does not render when new gradebook is not enabled" do
-      @course.disable_feature!(:new_gradebook)
-      render
-      expect(response).not_to have_tag("label[for=course_large_course]")
     end
 
     it "has a Large Course label" do

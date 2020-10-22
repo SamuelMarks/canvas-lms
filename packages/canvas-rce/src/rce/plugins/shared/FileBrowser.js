@@ -18,29 +18,45 @@
 
 import React from 'react'
 import {func} from 'prop-types'
+import classnames from 'classnames'
 import {View} from '@instructure/ui-layout'
+import {downloadToWrap} from '../../../common/fileUrl'
+import {mediaPlayerURLFromFile} from './fileTypeUtils'
 
 // TODO: should find a better way to share this code
-import FileBrowser from '../../../../../../app/jsx/shared/rce/FileBrowser'
+import FileBrowser from '../../../canvasFileBrowser/FileBrowser'
+import {isPreviewable} from './Previewable'
 
 RceFileBrowser.propTypes = {
   onFileSelect: func.isRequired
 }
 
-export default function RceFileBrowser({onFileSelect}) {
+export default function RceFileBrowser(props) {
+  const {onFileSelect} = props
+
   function handleFileSelect(fileInfo) {
-    fileInfo.title = fileInfo.name
-    fileInfo.href = fileInfo.api.url
+    const content_type = fileInfo.api['content-type']
+    const canPreview = isPreviewable(content_type)
+    const clazz = classnames('instructure_file_link', {
+      instructure_scribd_file: canPreview
+    })
+    const url = downloadToWrap(fileInfo.api.url)
+    const embedded_iframe_url = mediaPlayerURLFromFile(fileInfo.api)
+
     onFileSelect({
       name: fileInfo.name,
       title: fileInfo.name,
-      href: fileInfo.api.url
+      href: url,
+      embedded_iframe_url,
+      target: '_blank',
+      class: clazz,
+      content_type
     })
   }
 
   return (
     <View as="div" margin="medium" data-testid="instructure_links-FilesPanel">
-      <FileBrowser allowUpload={false} selectFile={handleFileSelect} />
+      <FileBrowser allowUpload={false} selectFile={handleFileSelect} contentTypes={['**']} />
     </View>
   )
 }

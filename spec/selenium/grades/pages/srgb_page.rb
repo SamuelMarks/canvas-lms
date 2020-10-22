@@ -32,6 +32,12 @@ class SRGB
       f('#switch_to_default_gradebook')
     end
 
+    def switch_to_default_gradebook
+      f('[data-component="GradebookSelector"] input').click
+      wait_for_animations
+      fj("[role=\"option\"]:contains(\"Gradebook…\")").click
+    end
+
     def assignment_sorting_dropdown
       f(assignment_sort_order_selector)
     end
@@ -180,7 +186,7 @@ class SRGB
     end
 
     def select_student(student)
-      click_option(student_dropdown, student.name)
+      click_option(student_dropdown, student.sortable_name)
     end
 
     def select_grading_period(grading_period)
@@ -233,4 +239,3 @@ class SRGB
 
   end
 end
-

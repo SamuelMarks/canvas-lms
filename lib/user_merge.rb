@@ -60,7 +60,12 @@ class UserMerge
       merge_data.items.create!(user: from_user, item_type: 'user_preferences', item: from_user.preferences)
       merge_data.items.create!(user: target_user, item_type: 'user_preferences', item: target_user.preferences)
 
-      prefs = shard_aware_preferences
+      if from_user.needs_preference_migration?
+        prefs = shard_aware_preferences
+      else
+        copy_migrated_preferences # uses new rows to store preferences
+        prefs = from_user.preferences
+      end
       target_user.preferences = target_user.preferences.merge(prefs)
       target_user.save if target_user.changed?
 
@@ -162,8 +167,7 @@ class UserMerge
     end
 
     from_user.reload
-    target_user.touch
-    target_user.clear_cache_key(*Canvas::CacheRegister::ALLOWED_TYPES['User'])
+    target_user.clear_caches
     from_user.destroy
     @merge_data.workflow_state = 'active'
     @merge_data.save!
@@ -177,13 +181,19 @@ class UserMerge
   def copy_favorites
     from_user.favorites.find_each do |f|
       Favorite.unique_constraint_retry do
-        course_id = Shard.relative_id_for(f.context_id, from_user.shard, target_user.shard)
-        fave = target_user.favorites.where(context_type: 'Course', context_id: course_id).take
-        target_user.favorites.create!(context_type: 'Course', context_id: course_id) unless fave
+        fave = target_user.favorites.where(context_type: 'Course', context_id: f.context_id).take
+        target_user.favorites.create!(context_type: 'Course', context_id: f.context_id) unless fave
       end
     end
   end
 
+  def translate_course_id_or_asset_string(key)
+    id = key.is_a?(String) ? key.split('_').last : key
+    new_id = Shard.relative_id_for(id, from_user.shard, target_user.shard)
+    key.is_a?(String) ? [key.split('_').first, new_id].join('_') : new_id
+  end
+
+  # can remove when all preferences have been migrated
   def shard_aware_preferences
     return from_user.preferences if from_user.shard == target_user.shard
     preferences = from_user.preferences.dup
@@ -191,9 +201,7 @@ class UserMerge
       preferences.delete(pref)
       new_pref = {}
       from_user.preferences.dig(pref)&.each do |key, value|
-        id = key.is_a?(String) ? key.split('_').last : key
-        new_id = Shard.relative_id_for(id, from_user.shard, target_user.shard)
-        new_key = key.is_a?(String) ? [key.split('_').first, new_id].join('_') : new_id
+        new_key = translate_course_id_or_asset_string(key)
         new_pref[new_key] = value
       end
       preferences[pref] = new_pref unless new_pref.empty?
@@ -201,19 +209,54 @@ class UserMerge
     preferences
   end
 
+  def copy_migrated_preferences
+    target_user.migrate_preferences_if_needed # may as well
+    from_values = from_user.user_preference_values.to_a
+    target_values = target_user.user_preference_values.to_a.index_by{|r| [r.key, r.sub_key]}
+
+    new_record_hashes = []
+    existing_record_updates = {}
+
+    from_values.each do |from_record|
+      key = from_record.key
+      sub_key = from_record.sub_key
+      value = from_record.value
+      if from_user.shard != target_user.shard
+        # tl;dr do the same thing as shard_aware_preferences
+        if key == "custom_colors"
+          value = Hash[value.map{|id, color| [translate_course_id_or_asset_string(id), color]}]
+        elsif key == "course_nicknames"
+          sub_key = translate_course_id_or_asset_string(sub_key)
+        end
+      end
+
+      if existing_record = target_values[[key, sub_key]]
+        existing_record_updates[existing_record] = value
+      else
+        new_record_hashes << {:user_id => target_user.id, :key => key, :sub_key => sub_key&.to_json, :value => value.to_yaml}
+      end
+    end
+    target_user.shard.activate do
+      UserPreferenceValue.bulk_insert(new_record_hashes)
+      existing_record_updates.each do |record, new_value|
+        UserPreferenceValue.where(:id => record).update_all(:value => new_value)
+      end
+    end
+  end
+
   def populate_past_lti_ids
     move_existing_past_lti_ids
     Shard.with_each_shard(from_user.associated_shards + from_user.associated_shards(:weak) + from_user.associated_shards(:shadow)) do
       lti_ids = []
-      {enrollments: :course, group_memberships: :group, account_users: :account}.each do |klass, type|
+      { enrollments: :course, group_memberships: :group, account_users: :account }.each do |klass, type|
         klass.to_s.classify.constantize.where(user_id: from_user).distinct_on(type.to_s + '_id').each do |context|
           next if UserPastLtiId.where(user: [target_user, from_user], context_id: context.send(type.to_s + '_id'), context_type: type.to_s.classify).exists?
           lti_ids << UserPastLtiId.new(user: target_user,
-                                        context_id: context.send(type.to_s + '_id'),
-                                        context_type: type.to_s.classify,
-                                        user_uuid: from_user.uuid,
-                                        user_lti_id: from_user.lti_id,
-                                        user_lti_context_id: from_user.lti_context_id)
+                                       context_id: context.send(type.to_s + '_id'),
+                                       context_type: type.to_s.classify,
+                                       user_uuid: from_user.uuid,
+                                       user_lti_id: from_user.lti_id,
+                                       user_lti_context_id: from_user.lti_context_id)
         end
       end
       UserPastLtiId.bulk_insert_objects(lti_ids)
@@ -221,19 +264,24 @@ class UserMerge
   end
 
   def move_existing_past_lti_ids
-    existing_past_ids = target_user.past_lti_ids.select(:context_id, :context_type).group_by(&:context_type)
-    existing_past_ids.default = []
+    existing_past_ids = target_user.past_lti_ids.select(:context_id, :context_type).shard(target_user).group_by(&:context_type)
     if existing_past_ids.present?
       ['Group', 'Account', 'Course'].each do |klass|
-        from_user.past_lti_ids.where(context_type: klass).where.not(context_id: existing_past_ids[klass].map(&:context_id)).update_all(user_id: target_user.id)
+        next unless existing_past_ids[klass]
+        Shard.partition_by_shard(existing_past_ids[klass]) do |shard_past_ids|
+          UserPastLtiId.where(user_id: from_user, context_type: klass).where.not(context_id: shard_past_ids.map(&:context_id)).update_all(user_id: target_user.id)
+        end
       end
-    else # there are no possible conflicts just move them over
-      from_user.past_lti_ids.shard(from_user).update_all(user_id: target_user.id)
+    else
+      # there are no possible conflicts just move them over
+      Shard.partition_by_shard(from_user.past_lti_ids.shard(from_user).pluck(:id)) do |shard_past_ids|
+        UserPastLtiId.where(id: shard_past_ids).update_all(user_id: target_user.id)
+      end
     end
   end
 
   def handle_communication_channels
-    max_position = target_user.communication_channels.last.try(:position) || 0
+    max_position = target_user.communication_channels.last&.position&.+(1) || 0
     to_retire_ids = []
     known_ccs = target_user.communication_channels.pluck(:id)
     from_user.communication_channels.each do |cc|
@@ -278,7 +326,7 @@ class UserMerge
       scope = scope.where.not(id: to_retire_ids) unless to_retire_ids.empty?
       unless scope.empty?
         merge_data.build_more_data(scope, data: data)
-        scope.update_all(["user_id=?, position=position+?", target_user, max_position])
+        scope.update_all(["user_id=?, position=position+?, root_account_ids='{?}'", target_user, max_position, target_user.root_account_ids])
       end
     end
     merge_data.bulk_insert_merge_data(data) unless data.empty?
@@ -357,18 +405,38 @@ class UserMerge
   def move_observees
     merge_data.bulk_insert_merge_data(data) unless data.empty?
     @data = []
+    observer_links = from_user.as_observer_observation_links.shard(from_user)
     # record all the records before destroying them
-    # pass the from_user since user_id will be the observer
-    merge_data.build_more_data(from_user.as_observer_observation_links, user: from_user, data: data)
-    merge_data.build_more_data(from_user.as_student_observation_links, data: data)
-    # delete duplicate or invalid observers/observees, move the rest
-    from_user.as_observer_observation_links.where(user_id: target_user.as_observer_observation_links.map(&:user_id)).destroy_all
-    from_user.as_observer_observation_links.where(user_id: target_user).destroy_all
-    target_user.as_observer_observation_links.where(user_id: from_user).destroy_all
-    from_user.as_observer_observation_links.update_all(observer_id: target_user.id)
-    xor_observer_ids = UserObservationLink.where(student: [from_user, target_user]).distinct.pluck(:observer_id)
-    from_user.as_student_observation_links.where(observer_id: target_user.as_student_observation_links.map(&:observer_id)).destroy_all
-    from_user.as_student_observation_links.update_all(user_id: target_user.id)
+    # pass the from_user since user_id on observation_link is the student we are targeting the observer here
+    merge_data.build_more_data(observer_links, user: from_user, data: data)
+
+    Shard.partition_by_shard(observer_links) do |shard_observer_links|
+      # delete links that are now duplicates between the from_user and target_user
+      UserObservationLink.where(id: shard_observer_links).where(user_id: target_user.as_observer_observation_links.select(:user_id)).destroy_all
+      # delete what would be observing themselves.
+      UserObservationLink.where(id: shard_observer_links).where(user_id: target_user).destroy_all
+      to_delete = target_user.as_student_observation_links.where(observer_id: from_user)
+      merge_data.build_more_data(to_delete, data: data)
+      to_delete.destroy_all
+      # update links to target_user
+      UserObservationLink.active.where(id: shard_observer_links).update_all(observer_id: target_user.id)
+    end
+
+    student_links = from_user.as_student_observation_links.shard(from_user)
+    merge_data.build_more_data(student_links, data: data)
+    Shard.partition_by_shard(student_links) do |shard_student_links|
+      # delete links that are now duplicates between the from_user and target_user
+      UserObservationLink.where(id: shard_student_links).where(observer_id: target_user.as_student_observation_links.select(:observer_id)).destroy_all
+      # delete what would be observing themselves.
+      UserObservationLink.where(id: shard_student_links).where(observer_id: target_user).destroy_all
+      to_delete = target_user.as_observer_observation_links.where(user_id: from_user)
+      merge_data.build_more_data(to_delete, data: data)
+      to_delete.destroy_all
+      # update links to target_user
+      UserObservationLink.active.where(id: shard_student_links).update_all(user_id: target_user.id)
+      target_user.as_student_observation_links.where(observer_id: shard_student_links).each(&:create_linked_enrollments)
+    end
+
     # for any observers not already watching both users, make sure they have
     # any missing observer enrollments added
     if from_user.shard != target_user.shard
@@ -383,9 +451,9 @@ class UserMerge
         end
       end
     end
+
     merge_data.bulk_insert_merge_data(data) unless data.empty?
     @data = []
-    target_user.as_student_observation_links.where(observer_id: xor_observer_ids).each(&:create_linked_enrollments)
   end
 
   def destroy_conflicting_module_progressions

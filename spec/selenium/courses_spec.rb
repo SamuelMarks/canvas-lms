@@ -102,20 +102,6 @@ describe "courses" do
         expect(f("#content")).not_to contain_css('#course_status')
       end
 
-      it "should allow unpublishing of the course if submissions have no score or grade" do
-        skip('flaky alert. ADMIN-3022')
-        course_with_student_submissions
-        @course.default_view = 'feed'
-        @course.save
-        get "/courses/#{@course.id}"
-        course_status_buttons = ff('#course_status_actions button')
-        course_status_buttons.first.click
-        wait_for(method: nil, timeout: 5) {
-          assert_flash_notice_message('successfully updated')
-        }
-        validate_action_button(:first, 'Unpublished')
-      end
-
       it "should allow publishing/unpublishing with only change_course_state permission" do
         @course.account.role_overrides.create!(:permission => :manage_course_content, :role => teacher_role, :enabled => false)
         @course.account.role_overrides.create!(:permission => :manage_courses, :role => teacher_role, :enabled => false)
@@ -183,22 +169,6 @@ describe "courses" do
       click_option('#course_select_menu', course2.name)
       expect_new_page_load { f('#apply_select_menus').click }
       expect(f('#breadcrumbs .home + li a')).to include_text(course2.name)
-    end
-
-    it "should load the users page using ajax" do
-      skip('flaky alert. ADMIN-3022')
-      course_with_teacher_logged_in
-
-      # Set up the course with > 50 users (to test scrolling)
-      create_users_in_course @course, 60
-
-      @course.enroll_user(user_factory, 'TaEnrollment')
-
-      # Test that the page loads properly the first time.
-      get "/courses/#{@course.id}/users"
-      wait_for_ajaximations
-      expect_no_flash_message :error
-      expect(ff('.roster .rosterUser').length).to eq 50
     end
 
     it "should only show users that a user has permissions to view" do
@@ -309,41 +279,6 @@ describe "courses" do
       Account.default.save!
     end
 
-    it "should auto-accept the course invitation if previews are not allowed" do
-      skip('flaky alert. ADMIN-3022')
-      Account.default.settings[:allow_invitation_previews] = false
-      Account.default.save!
-      enroll_student(@student, false)
-
-      create_session(@student.pseudonym)
-      get "/courses/#{@course.id}"
-      wait_for_ajaximations
-      assert_flash_notice_message "Invitation accepted!"
-      expect(f("#content")).not_to contain_css(".ic-notification button[name='accept'] ")
-    end
-
-    it "should accept the course invitation" do
-      skip('flaky alert. ADMIN-3022')
-      enroll_student(@student, false)
-
-      create_session(@student.pseudonym)
-      get "/courses/#{@course.id}"
-      f(".ic-notification button[name='accept'] ").click
-      wait_for(method: nil, timeout: 5) {
-        assert_flash_notice_message "Invitation accepted!"
-      }
-    end
-
-    it "should reject a course invitation" do
-      skip('flaky alert. ADMIN-3022')
-      enroll_student(@student, false)
-
-      create_session(@student.pseudonym)
-      get "/courses/#{@course.id}"
-      f(".ic-notification button[name=reject]").click
-      assert_flash_notice_message "Invitation canceled."
-    end
-
     it "should display user groups on courses page" do
       group = Group.create!(:name => "group1", :context => @course)
       group.add_user(@student)
@@ -423,5 +358,53 @@ describe "courses" do
     expect(f('#announcements_on_home_page')).to be_displayed
     expect(f('#announcements_on_home_page')).to include_text(text)
     expect(f('#announcements_on_home_page')).to_not include_text(html)
+  end
+
+  it "should properly apply visible sections to announcement limit" do
+    course_with_teacher(active_course: true)
+    @course.show_announcements_on_home_page = true
+    @course.home_page_announcement_limit = 2
+    @course.save!
+
+    section1 = @course.course_sections.create!(name: 'Section 1')
+    section2 = @course.course_sections.create!(name: 'Section 2')
+
+    # first, create an announcement for the entire course
+    @course.announcements.create!(
+      user: @teacher,
+      message: 'hello, course!'
+    ).save!
+
+    # next, create 2 announcements outside student1's section
+    ['sec an 1', 'sec an 2'].each do |msg|
+      sec_an = @course.announcements.create!(
+        user: @teacher,
+        message: msg
+      )
+      sec_an.is_section_specific = true
+      sec_an.course_sections = [section2]
+      sec_an.save!
+    end
+
+    # last, create 1 announcement inside student1's section
+    a2 = @course.announcements.create!(
+      user: @teacher,
+      message: 'hello, section!'
+    )
+    a2.is_section_specific = true
+    a2.course_sections = [section1]
+    a2.save!
+
+    student1, _student2 = create_users(2, return_type: :record)
+    @course.enroll_student(student1, :enrollment_state => 'active')
+    student_in_section(section1, user: student1)
+    user_session student1
+    get "/courses/#{@course.id}"
+    wait_for(method: nil, timeout: 10) { ff('div.ic-announcement-row__content') }
+    contents = ff('div.ic-announcement-row__content')
+    # these expectations make sure pagination, scope filtration, and announcement ordering works
+    expect(contents.count).to eq 2
+    expect(contents[0].text).to eq 'hello, section!'
+    expect(contents[1].text).to eq 'hello, course!'
   end
 end

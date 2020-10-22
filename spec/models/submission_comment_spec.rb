@@ -23,9 +23,12 @@ RSpec.describe SubmissionComment do
     course_with_teacher(active_all: true)
     course_with_observer(active_all: true)
     student_in_course(active_all: true)
+
     @assignment = @course.assignments.build
     @assignment.workflow_state = :published
     @assignment.save!
+    @assignment.unmute!
+
     @submission = @assignment.submit_homework(@user)
   end
 
@@ -33,6 +36,17 @@ RSpec.describe SubmissionComment do
 
   it "creates a new instance given valid attributes" do
     expect(@submission.submission_comments.create!(valid_attributes)).to be_persisted
+  end
+
+  describe '#set_root_account_id' do
+    subject { submission_comment.root_account }
+
+    let(:submission) { @submission }
+    let(:submission_comment) { submission.submission_comments.create!(valid_attributes) }
+
+    context 'as a before_save callback' do
+      it { is_expected.to eq submission.context.root_account }
+    end
   end
 
   describe '#body' do
@@ -135,28 +149,12 @@ RSpec.describe SubmissionComment do
       expect(@comment.messages_sent).to be_include('Submission Comment For Teacher')
     end
 
-    context "muted assignments" do
-      it "doesn't dispatch notification on create" do
-        @assignment.mute!
+    it "doesn't dispatch notifications on create for manually posted assignments" do
+      @assignment.ensure_post_policy(post_manually: true)
+      @assignment.hide_submissions(submission_ids: [@submission.id])
 
-        @comment = @submission.add_comment(author: @teacher, comment: "some comment")
-        expect(@comment.messages_sent.keys).not_to include('Submission Comment')
-      end
-    end
-
-    context "post policies" do
-      before(:once) do
-        @course.enable_feature!(:new_gradebook)
-        PostPolicy.enable_feature!
-      end
-
-      it "doesn't dispatch notifications on create for manually posted assignments" do
-        @assignment.post_policy.update_attribute(:post_manually, true)
-        @assignment.hide_submissions(submission_ids: [@submission.id])
-
-        @comment = @submission.add_comment(author: @teacher, comment: "some comment")
-        expect(@comment.messages_sent.keys).not_to include('Submission Comment')
-      end
+      @comment = @submission.add_comment(author: @teacher, comment: "some comment")
+      expect(@comment.messages_sent.keys).not_to include('Submission Comment')
     end
 
     context 'draft comment' do
@@ -744,40 +742,25 @@ This text has a http://www.google.com link in it...
   end
 
   describe "after_save#update_participation" do
-    context "muted/unmuted assignments" do
-      it "doesn't update participation for a muted assignment" do
-        @assignment.mute!
+    it "doesn't update participation for a manually posted assignment" do
+      @assignment.post_policy.update_attribute(:post_manually, true)
+      @assignment.hide_submissions(submission_ids: [@submission.id])
 
-        expect(ContentParticipation).to_not receive(:create_or_update)
-        @comment = @submission.add_comment(author: @teacher, comment: "some comment")
-      end
-
-      it "updates particiapation for an unmuted assignment" do
-        expect(ContentParticipation).to receive(:create_or_update).
-          with({content: @submission, user: @submission.user, workflow_state: "unread"})
-        @comment = @submission.add_comment(author: @teacher, comment: "some comment")
-      end
+      expect(ContentParticipation).to_not receive(:create_or_update)
+      @comment = @submission.add_comment(author: @teacher, comment: "some comment")
     end
 
-    context "post policies" do
-      before(:once) do
-        @course.enable_feature!(:new_gradebook)
-        PostPolicy.enable_feature!
-      end
+    it "updates participation for an automatically posted assignment" do
+      expect(ContentParticipation).to receive(:create_or_update).
+        with({content: @submission, user: @submission.user, workflow_state: "unread"})
+      @comment = @submission.add_comment(author: @teacher, comment: "some comment")
+    end
+  end
 
-      it "doesn't update participation for a manually posted assignment" do
-        @assignment.post_policy.update_attribute(:post_manually, true)
-        @assignment.hide_submissions(submission_ids: [@submission.id])
-
-        expect(ContentParticipation).to_not receive(:create_or_update)
-        @comment = @submission.add_comment(author: @teacher, comment: "some comment")
-      end
-
-      it "updates participation for an automatically posted assignment" do
-        expect(ContentParticipation).to receive(:create_or_update).
-          with({content: @submission, user: @submission.user, workflow_state: "unread"})
-        @comment = @submission.add_comment(author: @teacher, comment: "some comment")
-      end
+  describe "workflow_state" do
+    it "is set to active by default" do
+      comment = @submission.add_comment(author: @teacher, comment: ":|")
+      expect(comment).to be_active
     end
   end
 end

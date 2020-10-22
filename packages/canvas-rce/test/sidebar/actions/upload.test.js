@@ -18,7 +18,6 @@
 
 import assert from 'assert'
 import sinon from 'sinon'
-import K5Uploader from '@instructure/k5uploader'
 import * as actions from '../../../src/sidebar/actions/upload'
 import * as filesActions from '../../../src/sidebar/actions/files'
 import * as imagesActions from '../../../src/sidebar/actions/images'
@@ -34,7 +33,7 @@ const fakeFileReader = {
 
 describe('Upload data actions', () => {
   const results = {id: 47}
-  const file = {url: 'fileurl', thumbnail_url: 'thumbnailurl'}
+  const file = {url: 'http://canvas.test/files/17/download', thumbnail_url: 'thumbnailurl'}
   const successSource = {
     fetchFolders() {
       return Promise.resolve({
@@ -214,6 +213,7 @@ describe('Upload data actions', () => {
           store.spy.calledWith({
             type: actions.START_FILE_UPLOAD,
             file: {
+              bookmark: undefined,
               parentFolderId: 24,
               name: 'foo.png',
               size: 3000,
@@ -304,7 +304,11 @@ describe('Upload data actions', () => {
         assert.ok(
           store.spy.calledWith({
             type: actions.COMPLETE_FILE_UPLOAD,
-            results
+            results: {
+              contextType: 'course',
+              contextId: 42,
+              ...results
+            }
           })
         )
         assert.ok(store.spy.calledWithMatch({type: filesActions.INSERT_FILE}))
@@ -484,6 +488,21 @@ describe('Upload data actions', () => {
   })
 
   describe('handleFailures', () => {
+    const R = global.Response
+    beforeEach(() => {
+      if (typeof Response !== 'function') {
+        global.Response = function(body, status) {
+          this.status = status
+          this.json = () => {
+            return Promise.resolve(JSON.parse(body))
+          }
+        }
+      }
+    })
+    afterEach(() => {
+      global.Response = R
+    })
+
     it('calls quota exceeded when the file size exceeds the quota', () => {
       const fakeDispatch = sinon.spy()
       const error = {
@@ -546,8 +565,12 @@ describe('Upload data actions', () => {
   })
 
   describe('removePlaceholdersFor', () => {
+    let bridgeSpy
+    afterEach(() => {
+      bridgeSpy && bridgeSpy.restore()
+    })
     it('removes the placeholder through the bridge', () => {
-      const bridgeSpy = sinon.spy(Bridge, 'removePlaceholders')
+      bridgeSpy = sinon.spy(Bridge, 'removePlaceholders')
       const store = spiedStore({})
       store.dispatch(actions.removePlaceholdersFor('image1'))
       sinon.assert.calledWith(bridgeSpy, 'image1')
@@ -557,6 +580,36 @@ describe('Upload data actions', () => {
       const store = spiedStore({})
       store.dispatch(actions.removePlaceholdersFor('image1'))
       sinon.assert.calledWith(store.spy, {type: 'STOP_MEDIA_UPLOADING'})
+    })
+  })
+
+  describe('media upload failure', () => {
+    let showErrorSpy
+    let removePlaceholdersSpy
+
+    beforeEach(() => {
+      showErrorSpy = sinon.spy(Bridge, 'showError')
+      removePlaceholdersSpy = sinon.spy(Bridge, 'removePlaceholders')
+    })
+
+    afterEach(() => {
+      showErrorSpy.restore()
+      removePlaceholdersSpy.restore()
+    })
+
+    it('removes placeholders', () => {
+      const error = new Error('uh oh')
+      const action = actions.failMediaUpload(error)
+      sinon.assert.calledWith(showErrorSpy, error)
+      assert.deepEqual(action, {type: actions.FAIL_MEDIA_UPLOAD, error})
+    })
+
+    it('handles failure', () => {
+      const store = spiedStore({})
+      const error = new Error('uh oh')
+      store.dispatch(actions.mediaUploadComplete(error, {uploadedFile: {name: 'bob'}}))
+      sinon.assert.calledWith(removePlaceholdersSpy, 'bob')
+      sinon.assert.calledWith(showErrorSpy, error)
     })
   })
 })

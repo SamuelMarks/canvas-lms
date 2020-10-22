@@ -24,6 +24,7 @@ class DeveloperKeyAccountBinding < ApplicationRecord
 
   belongs_to :account
   belongs_to :developer_key
+  belongs_to :root_account, class_name: 'Account'
 
   validates :account, :developer_key, presence: true
   validates :workflow_state, inclusion: { in: [OFF_STATE, ALLOW_STATE, ON_STATE] }
@@ -31,6 +32,7 @@ class DeveloperKeyAccountBinding < ApplicationRecord
   before_validation :infer_workflow_state
   after_update :clear_cache_if_site_admin
   after_update :update_tools!
+  before_save :set_root_account
 
   scope :active_in_account, -> (account) do
     where(account_id: account.account_chain_ids).
@@ -65,7 +67,7 @@ class DeveloperKeyAccountBinding < ApplicationRecord
   def self.find_in_account_priority(account_ids, developer_key_id, explicitly_set = true)
     raise 'Account ids must be integers' if account_ids.any? { |id| !id.is_a?(Integer) }
     account_ids_string = "{#{account_ids.join(',')}}"
-    binding_id = DeveloperKeyAccountBinding.connection.select_values(<<-SQL)
+    binding_id = DeveloperKeyAccountBinding.connection.select_values(<<~SQL)
       SELECT b.*
       FROM
           unnest('#{account_ids_string}'::int8[]) WITH ordinality AS i (id, ord)
@@ -84,7 +86,7 @@ class DeveloperKeyAccountBinding < ApplicationRecord
     return nil if developer_key.account_id.present?
     Shard.default.activate do
       MultiCache.fetch(site_admin_cache_key(developer_key)) do
-        Shackles.activate(:slave) do
+        GuardRail.activate(:secondary) do
           binding = self.where.not(workflow_state: ALLOW_STATE).find_by(
             account: Account.site_admin,
             developer_key: developer_key
@@ -118,6 +120,10 @@ class DeveloperKeyAccountBinding < ApplicationRecord
   end
 
   private
+
+  def set_root_account
+    self.root_account_id ||= account&.resolved_root_account_id
+  end
 
   def update_tools!
     if disable_tools?

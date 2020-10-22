@@ -256,7 +256,7 @@ describe Api::V1::User do
     end
 
     it "requires :view_user_logins to return login_id" do
-      RoleOverride.create!(context: Account.default, role: Role.get_built_in_role('AccountAdmin'),
+      RoleOverride.create!(context: Account.default, role: admin_role,
             permission: 'view_user_logins', enabled: false)
       @user = User.create!(:name => 'Test User')
       @user.pseudonyms.create!(:unique_id => 'abc', :account => Account.default)
@@ -277,7 +277,7 @@ describe Api::V1::User do
       end
 
       it "does not include email without :read_email_addresses permission" do
-        RoleOverride.create!(context: Account.default, role: Role.get_built_in_role('AccountAdmin'),
+        RoleOverride.create!(context: Account.default, role: admin_role,
             permission: 'read_email_addresses', enabled: false)
         json = @test_api.user_json(@user, @admin, {}, ['email'], Account.default)
         expect(json.keys).not_to include 'email'
@@ -376,6 +376,11 @@ describe Api::V1::User do
       expect(@test_api.user_json(@student, @admin, {}, ['uuid'], @course)).not_to have_key("past_uuid")
       UserPastLtiId.create!(user: @student, context: @course, user_lti_id: 'old_lti_id', user_lti_context_id: 'old_lti_id', user_uuid: 'old_uuid')
       expect(@test_api.user_json(@student, @admin, {}, ['uuid'], @course)).to have_key("past_uuid")
+    end
+
+    it 'outputs last_login in json with includes params present' do
+      expect(@test_api.user_json(@student, @admin, {}, [], @course)).not_to have_key("last_login")
+      expect(@test_api.user_json(@student, @admin, {}, ['last_login'], @course)).to have_key("last_login")
     end
   end
 
@@ -917,11 +922,11 @@ describe "Users API", type: :request do
       expect(response.code).to eql "401"
     end
 
-    it "returns an error when search_term is fewer than 3 characters" do
+    it "returns an error when search_term is fewer than 2 characters" do
       @account = Account.default
-      json = api_call(:get, "/api/v1/accounts/#{@account.id}/users", { :controller => 'users', :action => "api_index", :format => 'json', :account_id => @account.id.to_param }, {:search_term => 'ab'}, {}, :expected_status => 400)
+      json = api_call(:get, "/api/v1/accounts/#{@account.id}/users", { :controller => 'users', :action => "api_index", :format => 'json', :account_id => @account.id.to_param }, {:search_term => 'a'}, {}, :expected_status => 400)
       error = json["errors"].first
-      verify_json_error(error, "search_term", "invalid", "3 or more characters is required")
+      verify_json_error(error, "search_term", "invalid", "2 or more characters is required")
     end
 
     it "returns a list of users filtered by search_term" do
@@ -943,6 +948,21 @@ describe "Users API", type: :request do
       end
     end
 
+    it "returns a list of users filtered by enrollment_type" do
+      @account = Account.default
+      # student enrollment created in before(:once) block
+      teacher_in_course(active_all: true, course: @course)
+      ta_in_course(active_all: true, course: @course)
+      @user = @admin
+
+      json = api_call(:get, "/api/v1/accounts/#{@account.id}/users",
+        { :controller => 'users', :action => "api_index", :format => 'json', :account_id => @account.id.to_param },
+        { :enrollment_type => 'student' })
+
+      expect(json.count).to eq 1
+      expect(json.map{|user| user['name']}).to eq [@student.name]
+    end
+
     it "doesn't kersplode when filtering by role and sorting" do
       @account = Account.default
       json = api_call(:get, "/api/v1/accounts/#{@account.id}/users",
@@ -958,28 +978,58 @@ describe "Users API", type: :request do
       expect(json.map{|r| r['id']}).to eq [@student.id]
     end
 
-    it "includes last login info" do
-      @account = Account.default
-      u = User.create!(name: 'test user')
-      p = u.pseudonyms.create!(account: @account, unique_id: 'user')
-      p.current_login_at = Time.now.utc
-      p.save!
+    context "includes last login info" do
+      before :once do
+        @account = Account.default
+        @u = User.create!(name: 'test user')
+        @p = @u.pseudonyms.create!(account: @account, unique_id: 'user')
+        @p.current_login_at = 2.minutes.ago
+        @p.save!
+      end
 
-      json = api_call(:get, "/api/v1/accounts/#{@account.id}/users", { :controller => 'users', :action => "api_index", :format => 'json', :account_id => @account.id.to_param }, { include: ['last_login'], search_term: u.id.to_s })
-      expect(json.count).to eq 1
-      expect(json.first['last_login']).to eq p.current_login_at.iso8601
+      it 'should include last login' do
+        json = api_call(:get, "/api/v1/accounts/#{@account.id}/users", { :controller => 'users', :action => "api_index", :format => 'json', :account_id => @account.id.to_param }, { include: ['last_login'], search_term: @u.id.to_s })
+        expect(json.count).to eq 1
+        expect(json.first['last_login']).to eq @p.current_login_at.iso8601
+      end
 
-      # it should sort too
-      json = api_call(:get, "/api/v1/accounts/#{@account.id}/users",
-        { :controller => 'users', :action => "api_index", :format => 'json', :account_id => @account.id.to_param },
-        { include: ['last_login'], sort: "last_login", order: 'desc'})
-      expect(json.first['last_login']).to eq p.current_login_at.iso8601
+      it 'should include last login for a specific user' do
+        json = api_call(:get, "/api/v1/users/#{@u.id}", { :controller => 'users', :action => "api_show", :format => 'json', :id => @u.id }, { include: ['last_login'] })
+        expect(json.fetch('last_login')).to eq @p.current_login_at.iso8601
+      end
 
-      # it should include automatically when sorting by
-      json = api_call(:get, "/api/v1/accounts/#{@account.id}/users",
-        { :controller => 'users', :action => "api_index", :format => 'json', :account_id => @account.id.to_param },
-        { sort: "last_login", order: 'desc'})
-      expect(json.first['last_login']).to eq p.current_login_at.iso8601
+      it 'should sort too' do
+        json = api_call(:get, "/api/v1/accounts/#{@account.id}/users",
+          { :controller => 'users', :action => "api_index", :format => 'json', :account_id => @account.id.to_param },
+          { include: ['last_login'], sort: "last_login", order: 'desc'})
+        expect(json.first['last_login']).to eq @p.current_login_at.iso8601
+      end
+
+      it 'should include automatically when sorting by last login' do
+        json = api_call(:get, "/api/v1/accounts/#{@account.id}/users",
+          { :controller => 'users', :action => "api_index", :format => 'json', :account_id => @account.id.to_param },
+          { sort: "last_login", order: 'desc'})
+        expect(json.first['last_login']).to eq @p.current_login_at.iso8601
+      end
+
+      it 'should work with search terms' do
+        json = api_call(:get, "/api/v1/accounts/#{@account.id}/users",
+          { controller: 'users', action: 'api_index', format: 'json', account_id: @account.id.to_param },
+          { sort: 'last_login', order: 'desc', search_term: 'test'})
+        expect(json.first['last_login']).to eq @p.current_login_at.iso8601
+      end
+
+      it "shouldn't include last_logins from a different account" do
+        account = @account
+        p2 = @u.pseudonyms.create!(account: account_model, unique_id: 'user')
+        p2.current_login_at = Time.now.utc
+        p2.save!
+
+        json = api_call(:get, "/api/v1/accounts/#{account.id}/users",
+          { controller: 'users', action: 'api_index', format: 'json', account_id: account.id.to_param },
+          { include: ['last_login'], order: 'desc', search_term: 'test'})
+        expect(json.first['last_login']).to eq @p.current_login_at.iso8601
+      end
     end
 
     it "does return a next header on the last page" do
@@ -1247,13 +1297,6 @@ describe "Users API", type: :request do
         end
       end
 
-      it "should catch invalid dates before passing to the database" do
-        json = api_call(:post, "/api/v1/accounts/#{@site_admin.account.id}/users",
-                        { :controller => 'users', :action => 'create', :format => 'json', :account_id => @site_admin.account.id.to_s },
-                        { :pseudonym => { :unique_id => "test@example.com"},
-                          :user => { :name => "Test User", :birthdate => "-3587-11-20" } }, {}, {:expected_status => 400} )
-      end
-
       it "should allow site admins to create users and auto-validate communication channel" do
         create_user_skip_cc_confirm(@site_admin)
       end
@@ -1269,6 +1312,22 @@ describe "Users API", type: :request do
           new_user = User.find(json['id'])
           expect(new_user.shard).to eq @shard1
           expect(new_user.pseudonym.account).to eq @other_account
+        end
+
+        it "should not error when there is not a local pseudonym" do
+          @user = User.create!(name: 'default shard user')
+          @shard1.activate do
+            account = Account.create!
+            @pseudonym = account.pseudonyms.create!(user: @user, unique_id: 'so_unique@example.com')
+          end
+          # We need to return the pseudonym here, or one is created from the api_call method,
+          # or we'd need to setup more stuff in a plugin that would make this return happen without the allow method
+          allow(SisPseudonym).to receive(:for).with(@user, Account.default, type: :implicit, require_sis: false).and_return(@pseudonym)
+          api_call(:put, "/api/v1/users/#{@user.id}",
+                   { controller: 'users', action: 'update', format: 'json', id: @user.id.to_s },
+                   { user: { name: "Test User" } }
+          )
+          expect(response).to be_successful
         end
       end
 
@@ -1577,7 +1636,6 @@ describe "Users API", type: :request do
           'time_zone' => "Tijuana"
         })
 
-        expect(user.birthdate.to_date).to eq birthday.getutc.to_date
         expect(user.time_zone.name).to eql 'Tijuana'
       end
 
@@ -1639,20 +1697,6 @@ describe "Users API", type: :request do
           :user => {title: another_title, bio: another_bio, email: another_email}
         })
         expect(user.profile.reload.title).to eq another_title
-      end
-
-      it "should catch invalid dates" do
-        birthday = Time.now
-        json = api_call(:put, @path, @path_options, {
-            :user => {
-                :name => 'Tobias Funke',
-                :short_name => 'Tobias',
-                :sortable_name => 'Funke, Tobias',
-                :time_zone => 'Tijuana',
-                :birthdate => "-4000-02-01 10:20",
-                :locale => 'en'
-            }
-        }, {}, {:expected_status => 400})
       end
 
       it "should allow updating without any params" do
@@ -2091,16 +2135,14 @@ describe "Users API", type: :request do
 
     describe 'GET custom colors' do
       before :each do
-        @user.preferences[:custom_colors] = {
+        @user.set_preference(:custom_colors, {
           "user_#{@user.id}" => "efefef",
           "course_3" => "ababab"
-        }
-        @user.save!
+        })
       end
 
       it "should return an empty object if nothing is stored" do
-        @user.preferences.delete(:custom_colors)
-        @user.save!
+        @user.set_preference(:custom_colors, nil)
 
         json = api_call(
           :get,
@@ -2219,47 +2261,51 @@ describe "Users API", type: :request do
 
       before :once do
         course_factory(:active_all => true)
+        @cs_course = @course
         @shard1.activate do
-          @user = user_factory(:account => Account.create!, :active_all => true)
+          a = Account.create!
+          @user = user_factory(:account => a, :active_all => true)
+          @local_course = course_factory(:active_all => true, :account => a)
+          @local_course.enroll_student(@user, :enrollment_state => 'active')
         end
-        @course.enroll_student(@user, :enrollment_state => 'active')
+        @cs_course.enroll_student(@user, :enrollment_state => 'active')
       end
 
       it "should save colors relative to user's shard" do
-        json = api_call(:put, "/api/v1/users/#{@user.id}/colors/course_#{@course.id}",
+        @user.set_preference(:custom_colors, {"course_#{@local_course.local_id}" => "#bababa"})
+        json = api_call(:put, "/api/v1/users/#{@user.id}/colors/course_#{@cs_course.id}",
           { controller: 'users', action: 'set_custom_color', format: 'json',
-            id: @user.id.to_s, asset_string: "course_#{@course.id}", hexcode: 'ababab'
+            id: @user.id.to_s, asset_string: "course_#{@cs_course.id}", hexcode: 'ababab'
           }, {}, {}, {:expected_status => 200}
         )
         expect(json['hexcode']).to eq '#ababab'
-        expect(@user.reload.preferences[:custom_colors]["course_#{@course.global_id}"]).to eq '#ababab'
+        expect(@user.reload.get_preference(:custom_colors)["course_#{@cs_course.global_id}"]).to eq '#ababab'
+        expect(@user.reload.get_preference(:custom_colors)["course_#{@local_course.local_id}"]).to eq '#bababa' # should leave existing colors alone
       end
 
       it "should retrieve colors relative to user's shard" do
-        @user.preferences[:custom_colors] = {"course_#{@course.global_id}" => '#ababab'}
-        @user.save!
+        @user.set_preference(:custom_colors, {
+          "course_#{@cs_course.global_id}" => '#ababab',
+          "course_#{@local_course.local_id}" => '#bababa',
+        })
         json = api_call(:get, "/api/v1/users/#{@user.id}/colors",
           { controller: 'users', action: 'get_custom_colors', format: 'json', id: @user.id.to_s
           }, {}, {}, {:expected_status => 200}
         )
-        expect(json["custom_colors"]["course_#{@course.local_id}"]).to eq '#ababab'
+        expect(json["custom_colors"]["course_#{@cs_course.local_id}"]).to eq '#ababab'
+        expect(json["custom_colors"]["course_#{@local_course.global_id}"]).to eq '#bababa'
       end
 
       it "should ignore old cross-shard data" do
-        @shard1.activate do
-          @cs_course = Course.create!(:account => Account.first)
-          @cs_course.enroll_student(@user, :enrollment_state => "active")
-          @user.preferences[:custom_colors] = {
-            "course_#{@cs_course.global_id}" => '#ffffff', # old data plz ignore
-            "course_#{@cs_course.local_id}" => '#ababab' # new data
-          }
-          @user.save!
-        end
+        @user.set_preference(:custom_colors, {
+          "course_#{@local_course.global_id}" => '#ffffff', # old data plz ignore
+          "course_#{@local_course.local_id}" => '#ababab' # new data
+        })
         json = api_call(:get, "/api/v1/users/#{@user.id}/colors",
           { controller: 'users', action: 'get_custom_colors', format: 'json', id: @user.id.to_s
           }, {}, {}, {:expected_status => 200}
         )
-        expect(json["custom_colors"]["course_#{@cs_course.global_id}"]).to eq '#ababab'
+        expect(json["custom_colors"]["course_#{@local_course.global_id}"]).to eq '#ababab'
       end
     end
   end
@@ -2273,12 +2319,11 @@ describe "Users API", type: :request do
 
     describe "GET dashboard positions" do
       before :each do
-        @user.preferences[:dashboard_positions] = {
+        @user.set_preference(:dashboard_positions, {
           "course_1" => 3,
           "course_2" => 1,
           "course_3" => 2
-        }
-        @user.save!
+        })
       end
 
       it "should return dashboard postions for a user" do
@@ -2294,8 +2339,7 @@ describe "Users API", type: :request do
       end
 
       it "should return an empty if the user has no ordering set" do
-        @user.preferences.delete(:dashboard_positions)
-        @user.save!
+        @user.set_preference(:dashboard_positions, nil)
 
         json = api_call(
           :get,
@@ -2310,6 +2354,28 @@ describe "Users API", type: :request do
     end
 
     describe "PUT dashboard positions" do
+      it "should error when trying to use a large number" do
+        course1 = course_factory(active_all: true)
+        course2 = course_factory(active_all: true)
+
+        json = api_call(
+          :put,
+          "/api/v1/users/#{@user.id}/dashboard_positions",
+          { controller: "users", action: "set_dashboard_positions", format: "json",
+            id: @user.to_param
+          },
+          {
+            dashboard_positions: {
+              "course_#{course1.id}" => 2000,
+              "course_#{course2.id}" => 13,
+            }
+          },
+          {},
+          { expected_status: 400 }
+        )
+        expect(json['message']).to eq 'Position 2000 is too high. Your dashboard cards can probably be sorted with numbers 1-5, you could even use a 0.'
+      end
+
       it "should allow setting dashboard positions" do
         course1 = course_factory(active_all: true)
         course2 = course_factory(active_all: true)
@@ -2410,11 +2476,10 @@ describe "Users API", type: :request do
 
     describe "GET new user tutorial statuses" do
       before :once do
-        @user.preferences[:new_user_tutorial_statuses] = {
+        @user.set_preference(:new_user_tutorial_statuses, {
           "home" => true,
           "modules" => false,
-        }
-        @user.save!
+        })
       end
 
       it "should return new user tutorial collapsed statuses for a user" do
@@ -2428,8 +2493,7 @@ describe "Users API", type: :request do
       end
 
       it "should return empty if the user has no preference set" do
-        @user.preferences.delete(:new_user_tutorial_statuses)
-        @user.save!
+        @user.set_preference(:new_user_tutorial_statuses, nil)
 
         json = api_call(
           :get,
@@ -2650,8 +2714,8 @@ PUBLIC
         course2 = @course
         @course2_enrollment = course2.enroll_student(@student1)
         @course2_enrollment.accept!
-        assignment = assignment_model(course: course2, submission_types: 'online_text_entry')
-        @most_recent_submission = assignment.grade_student(@student1, grader: teacher2, score: 10).first
+        @assignment1 = assignment_model(course: course2, submission_types: 'online_text_entry')
+        @most_recent_submission = @assignment1.grade_student(@student1, grader: teacher2, score: 10).first
         @most_recent_submission.graded_at = 1.day.ago
         @most_recent_submission.save!
       end
@@ -2709,6 +2773,22 @@ PUBLIC
         action: 'user_graded_submissions',
         format: 'json',
         only_current_enrollments: true
+      })
+      expect(json.count).to eq 2
+      expect(json.map { |s| s['id'] }).to eq [@next_submission.id, @last_submission.id]
+    end
+
+    it 'only gets the users submissions for published assignments when only_published_assignments=true' do
+      # normally there should not be submissions for unpublished assignments
+      # but there's an edge case with late policies
+      # using update_column because we can't unpublish an assignment with submissions
+      @assignment1.update_column(:workflow_state, 'unpublished')
+      json = api_call_as_user(@student1, :get, "/api/v1/users/#{@student1.id}/graded_submissions?only_published_assignments=true", {
+        id: @student1.to_param,
+        controller: 'users',
+        action: 'user_graded_submissions',
+        format: 'json',
+        only_published_assignments: true,
       })
       expect(json.count).to eq 2
       expect(json.map { |s| s['id'] }).to eq [@next_submission.id, @last_submission.id]

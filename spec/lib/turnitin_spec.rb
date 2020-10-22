@@ -187,11 +187,11 @@ describe Turnitin::Client do
       @turnitin_api = Turnitin::Client.new('test_account', 'sekret')
 
       expect(@submission.context).to receive(:turnitin_settings).at_least(1).and_return([:placeholder])
+      expect(@submission.assignment.context).to receive(:turnitin_settings).at_least(1).and_return([:placeholder])
       expect(Turnitin::Client).to receive(:new).at_least(1).with(:placeholder).and_return(@turnitin_api)
       expect(@turnitin_api).to receive(:enrollStudent).with(@course, @user).and_return(double(:success? => true))
       expect(@turnitin_api).to receive(:createOrUpdateAssignment).with(@assignment, @assignment.turnitin_settings).and_return({ :assignment_id => "1234" })
-      allow(Attachment).to receive(:instantiate).and_return(@attachment)
-      expect(@attachment).to receive(:open).and_return(:my_stub)
+      expect_any_instantiation_of(@attachment).to receive(:open).and_return(:my_stub)
     end
 
     it "submits attached files to turnitin" do

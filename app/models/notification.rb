@@ -39,6 +39,49 @@ class Notification < ActiveRecord::Base
     "Show In Feed",
   ].freeze
 
+  ALLOWED_SMS_NOTIFICATION_CATEGORIES = [
+    'announcement',
+    'grading'
+  ].freeze
+
+  ALLOWED_SMS_NOTIFICATION_TYPES = [
+    'Assignment Graded',
+    'Confirm SMS Communication Channel',
+    'New Announcement',
+    'Submission Grade Changed',
+    'Submission Graded'
+  ].freeze
+
+  COURSE_TYPES = [
+    # Course Activities
+    'Due Date',
+    'Grading Policies',
+    'Course Content',
+    'Files',
+    'Announcement',
+    'Announcement Created By You',
+    'Grading',
+    'Invitation',
+    'All Submissions',
+    'Late Grading',
+    'Submission Comment',
+    'Blueprint',
+
+    # Discussions
+    'Discussion',
+    'DiscussionEntry',
+
+    # Scheduling
+    'Student Appointment Signups',
+    'Appointment Signups',
+    'Appointment Cancelations',
+    'Appointment Availability',
+    'Calendar',
+
+    # Conferences
+    'Recording Ready'
+  ].freeze
+
   FREQ_IMMEDIATELY = 'immediately'
   FREQ_DAILY = 'daily'
   FREQ_WEEKLY = 'weekly'
@@ -46,6 +89,7 @@ class Notification < ActiveRecord::Base
 
   has_many :messages
   has_many :notification_policies, :dependent => :destroy
+  has_many :notification_policy_overrides, inverse_of: :notification, :dependent => :destroy
   before_save :infer_default_content
 
   scope :to_show_in_feed, -> { where("messages.category='TestImmediately' OR messages.notification_name IN (?)", TYPES_TO_SHOW_IN_FEED) }
@@ -95,7 +139,7 @@ class Notification < ActiveRecord::Base
   protected :infer_default_content
 
   # Public: create (and dispatch, and queue delayed) a message
-  #  for this notication, associated with the given asset, sent to the given recipients
+  #  for this notification, associated with the given asset, sent to the given recipients
   #
   # asset - what the message applies to. An assignment, a discussion, etc.
   # to_list - a list of who to send the message to. the list can contain Users, User ids, or communication channels
@@ -150,24 +194,36 @@ class Notification < ActiveRecord::Base
      TYPES_TO_SHOW_IN_FEED
   end
 
+  def self.categories_to_send_in_sms(root_account)
+    root_account.settings[:allowed_sms_notification_categories] || Setting.get('allowed_sms_notification_categories', ALLOWED_SMS_NOTIFICATION_CATEGORIES.join(',')).split(',')
+  end
+
+  def self.types_to_send_in_sms(root_account)
+    root_account.settings[:allowed_sms_notification_types] || Setting.get('allowed_sms_notification_types', ALLOWED_SMS_NOTIFICATION_TYPES.join(',')).split(',')
+  end
+
   def show_in_feed?
     self.category == "TestImmediately" || Notification.types_to_show_in_feed.include?(self.name)
   end
 
+  def is_course_type?
+    COURSE_TYPES.include? self.category
+  end
+
   def registration?
-    return self.category == "Registration"
+    self.category == "Registration"
   end
 
   def migration?
-    return self.category == "Migration"
+    self.category == "Migration"
   end
 
   def summarizable?
-    return !self.registration? && !self.migration?
+    !self.registration? && !self.migration?
   end
 
   def dashboard?
-    return ["Migration", "Registration", "Summaries", "Alert"].include?(self.category) == false
+    ["Migration", "Registration", "Summaries", "Alert"].exclude?(self.category)
   end
 
   def category_slug
@@ -286,6 +342,8 @@ class Notification < ActiveRecord::Base
     t 'names.manually_created_access_token_created', 'Manually Created Access Token Created'
     t 'names.account_user_notification', 'Account User Notification'
     t 'names.account_user_registration', 'Account User Registration'
+    t 'Annotation Notification'
+    t 'Annotation Teacher Notification'
     t 'names.assignment_changed', 'Assignment Changed'
     t 'names.assignment_created', 'Assignment Created'
     t 'names.assignment_due_date_changed', 'Assignment Due Date Changed'
@@ -358,6 +416,7 @@ class Notification < ActiveRecord::Base
     t 'names.blueprint_content_added', 'Blueprint Content Added'
     t 'names.content_link_error', 'Content Link Error'
     t 'names.account_notification', 'Account Notification'
+    t 'names.upcoming_assignment_alert', 'Upcoming Assignment Alert'
   end
 
   # TODO: i18n ... show these anywhere we show the category today
@@ -486,7 +545,6 @@ EOS
 Includes:
 
 * Assignment/submission grade entered/changed
-* Un-muted assignment grade
 * Grade weight changed
 EOS
     when 'Late Grading'

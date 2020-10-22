@@ -101,9 +101,10 @@ class AssignmentGroupsController < ApplicationController
   # Returns the paginated list of assignment groups for the current context.
   # The returned groups are sorted by their position field.
   #
-  # @argument include[] [String, "assignments"|"discussion_topic"|"all_dates"|"assignment_visibility"|"overrides"|"submission"|"observed_users"]
-  #  Associations to include with the group. "discussion_topic", "all_dates"
+  # @argument include[] [String, "assignments"|"discussion_topic"|"all_dates"|"assignment_visibility"|"overrides"|"submission"|"observed_users"|"can_edit"|"score_statistics"]
+  #  Associations to include with the group. "discussion_topic", "all_dates", "can_edit",
   #  "assignment_visibility" & "submission" are only valid if "assignments" is also included.
+  #  "score_statistics" requires that the "assignments" and "submission" options are included.
   #  The "assignment_visibility" option additionally requires that the Differentiated Assignments course feature be turned on.
   #  If "observed_users" is passed along with "assignments" and "submission", submissions for observed users will also be included as an array.
   #
@@ -127,7 +128,7 @@ class AssignmentGroupsController < ApplicationController
   #
   # @returns [AssignmentGroup]
   def index
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       if authorized_action(@context.assignment_groups.temp_record, @current_user, :read)
         groups = Api.paginate(@context.assignment_groups.active, self, api_v1_course_assignment_groups_url(@context))
 
@@ -329,8 +330,7 @@ class AssignmentGroupsController < ApplicationController
   def include_overrides?
     override_dates? ||
       include_params.include?('all_dates') ||
-      include_params.include?('overrides') ||
-      filter_by_grading_period?
+      include_params.include?('overrides')
   end
 
   def assignment_visibilities(course, assignments)
@@ -344,6 +344,7 @@ class AssignmentGroupsController < ApplicationController
 
   def index_groups_json(context, current_user, groups, assignments, submissions = [])
     include_overrides = include_params.include?('overrides')
+    include_score_statistics = include_params.include?('score_statistics')
 
     assignments_by_group = assignments.group_by(&:assignment_group_id)
     preloaded_attachments = user_content_attachments(assignments, context)
@@ -368,6 +369,7 @@ class AssignmentGroupsController < ApplicationController
         assignment_visibilities: assignment_visibilities(context, assignments),
         exclude_response_fields: assignment_excludes,
         include_overrides: include_overrides,
+        include_score_statistics: include_score_statistics,
         submissions: submissions,
         closed_grading_period_hash: closed_grading_period_hash,
         master_course_status: mc_status
@@ -442,9 +444,9 @@ class AssignmentGroupsController < ApplicationController
 
     if params[:scope_assignments_to_student] &&
       course.user_is_student?(@current_user, include_future: true, include_fake_student: true)
-      grading_period.assignments_for_student(assignments, @current_user)
+      grading_period.assignments_for_student(course, assignments, @current_user)
     else
-      grading_period.assignments(assignments)
+      grading_period.assignments(course, assignments)
     end
   end
 

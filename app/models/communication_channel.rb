@@ -26,11 +26,13 @@ class CommunicationChannel < ActiveRecord::Base
 
   belongs_to :pseudonym
   has_many :pseudonyms
-  belongs_to :user
+  belongs_to :user, inverse_of: :communication_channels
   has_many :notification_policies, :dependent => :destroy
+  has_many :notification_policy_overrides, inverse_of: :communication_channel, dependent: :destroy
   has_many :delayed_messages, :dependent => :destroy
   has_many :messages
 
+  before_save :set_root_account_ids
   before_save :assert_path_type, :set_confirmation_code
   before_save :consider_building_pseudonym
   validates_presence_of :path, :path_type, :user, :workflow_state
@@ -320,11 +322,18 @@ class CommunicationChannel < ActiveRecord::Base
   def send_otp!(code, account = nil)
     message = t :body, "Your Canvas verification code is %{verification_code}", :verification_code => code
     if Setting.get('mfa_via_sms', true) == 'true' && e164_path && account&.feature_enabled?(:notification_service)
+      InstStatsd::Statsd.increment("message.deliver.sms.one_time_password",
+                                   short_stat: 'message.deliver',
+                                   tags: { path_type: 'sms', notification_name: 'one_time_password' })
+      InstStatsd::Statsd.increment("message.deliver.sms.#{account.global_id}",
+                                   short_stat: 'message.deliver_per_account',
+                                   tags: { path_type: 'sms', root_account_id: account.global_id })
       Services::NotificationService.process(
         "otp:#{global_id}",
         message,
         "sms",
-        e164_path
+        e164_path,
+        true
       )
     else
       send_later_if_production_enqueue_args(
@@ -382,26 +391,16 @@ class CommunicationChannel < ActiveRecord::Base
   scope :in_state, lambda { |state| where(:workflow_state => state.to_s) }
   scope :of_type, lambda { |type| where(:path_type => type) }
 
-  def move_to_user(user, migrate=true)
-    return unless user
-    if self.pseudonym && self.pseudonym.unique_id == self.path
-      self.pseudonym.move_to_user(user, migrate)
-    else
-      old_user_id = self.user_id
-      self.user_id = user.id
-      self.save!
-      if old_user_id
-        Pseudonym.where(:user_id => old_user_id, :unique_id => self.path).update_all(:user_id => user)
-        User.where(:id => [old_user_id, user]).touch_all
-      end
-    end
-  end
-
+  # the only way this is used is if a user adds a communication channel in their
+  # profile from the default account. In this space, there is currently a
+  # check_box that will allow you to login with the same email. This method is
+  # only ever true for Account.default
+  # see build_pseudonym_for_email in app/views/profile/_ways_to_contact.html.erb
   def consider_building_pseudonym
     if self.build_pseudonym_on_confirm && self.active?
       self.build_pseudonym_on_confirm = false
-      pseudonym = self.user.pseudonyms.build(:unique_id => self.path, :account => Account.default)
-      existing_pseudonym = self.user.pseudonyms.active.find{|p| p.account_id == Account.default.id }
+      pseudonym = Account.default.pseudonyms.build(unique_id: self.path, user: self.user)
+      existing_pseudonym = Account.default.pseudonyms.active.where(user_id: self.user).take
       if existing_pseudonym
         pseudonym.password_salt = existing_pseudonym.password_salt
         pseudonym.crypted_password = existing_pseudonym.crypted_password
@@ -435,6 +434,16 @@ class CommunicationChannel < ActiveRecord::Base
         reset_bounce_count!
       end
     end
+  end
+
+  def set_root_account_ids(persist_changes: false, log: false)
+    # communication_channels always are on the same shard as the user object and
+    # can be used for any root_account, so just set root_account_ids from user.
+    self.root_account_ids = user.root_account_ids
+    if root_account_ids_changed? && log
+      InstStatsd::Statsd.increment("communication_channel.root_account_ids_set", short_stat: 'communication_channel.root_account_ids_set')
+    end
+    save! if persist_changes && root_account_ids_changed?
   end
 
   # This is setup as a default in the database, but this overcomes misspellings.

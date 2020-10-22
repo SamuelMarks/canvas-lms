@@ -17,6 +17,9 @@
 #
 
 class CalendarsController < ApplicationController
+  include Api::V1::Conferences
+  include CalendarConferencesHelper
+
   before_action :require_user
 
   def show
@@ -28,8 +31,8 @@ class CalendarsController < ApplicationController
     @feed_url = feeds_calendar_url((@context_enrollment || @context).feed_code)
     if params[:include_contexts]
       @selected_contexts = params[:include_contexts].split(",")
-    elsif @current_user.preferences[:selected_calendar_contexts]
-      @selected_contexts = @current_user.preferences[:selected_calendar_contexts]
+    else
+      @selected_contexts = @current_user.get_preference(:selected_calendar_contexts)
     end
     @wrap_titles = @domain_root_account && @domain_root_account.feature_enabled?(:wrap_calendar_event_titles)
     # somewhere there's a bad link that doesn't separate parameters properly.
@@ -106,5 +109,10 @@ class CalendarsController < ApplicationController
     StringifyIds.recursively_stringify_ids(@contexts_json)
     content_for_head helpers.auto_discovery_link_tag(:atom, @feed_url + '.atom', {:title => t(:feed_title, "Course Calendar Atom Feed")})
     js_env(@hash) if @hash
+
+    if Account.site_admin.feature_enabled?(:calendar_conferences)
+      calendar_contexts = (@contexts + [@domain_root_account]).uniq
+      add_conference_types_to_js_env(calendar_contexts)
+    end
   end
 end

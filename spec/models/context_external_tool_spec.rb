@@ -20,10 +20,9 @@ require File.expand_path(File.dirname(__FILE__) + '/../spec_helper.rb')
 
 describe ContextExternalTool do
   before(:once) do
-    course_model
-    @root_account = @course.root_account
+    @root_account = Account.default
     @account = account_model(:root_account => @root_account, :parent_account => @root_account)
-    @course.update_attribute(:account, @account)
+    course_model(:account => @account)
   end
 
   describe 'associations' do
@@ -47,6 +46,81 @@ describe ContextExternalTool do
     it 'allows setting the root account' do
       expect(tool.root_account).to eq @root_account
     end
+  end
+
+  describe '#permission_given?' do
+    let(:required_permission)  { 'some-permission' }
+    let(:launch_type) { 'some-launch-type' }
+    let(:tool) do
+      ContextExternalTool.create!(
+        context: @root_account,
+        name: 'Requires Permission',
+        consumer_key: 'key',
+        shared_secret: 'secret',
+        domain: 'requires.permision.com',
+        settings: {
+          global_navigation: {
+            'required_permissions' => required_permission,
+            text: 'Global Navigation (permission checked)',
+            url: 'http://requires.permission.com'
+          },
+          assignment_selection: {
+            'required_permissions' => required_permission,
+            text: 'Assignment selection',
+            url: 'http://requires.permission.com'
+          },
+          course_navigation: {
+            text: 'Course Navigation',
+            url: 'https://doesnot.requirepermission.com'
+          }
+        }
+      )
+    end
+    let(:course) { course_with_teacher(account: @root_account).context }
+    let(:user) { course.teachers.first }
+    let(:context) { course }
+
+    subject { tool.permission_given?(launch_type, user, context) }
+
+    context 'when the placement does not require a specific permission' do
+      let(:launch_type) { 'course_navigation' }
+
+      it { is_expected.to eq true }
+
+      context 'and the context is blank' do
+        let(:launch_type) { 'course_navigation' }
+        let(:context) { nil }
+
+        it { is_expected.to eq true }
+      end
+    end
+
+    context 'when the placement does require a specific permission' do
+      context 'and the context is blank' do
+        let(:required_permission) { 'view_group_pages' }
+        let(:launch_type) { 'assignment_selection' }
+        let(:context) { nil }
+
+        it { is_expected.to eq false }
+      end
+
+      context 'and the user has the needed permission in the context' do
+        let(:required_permission) { 'view_group_pages' }
+        let(:launch_type) { 'assignment_selection' }
+
+        it { is_expected.to eq true }
+      end
+
+      context 'and the placement is "global_navigation"' do
+        context 'and the user has an enrollment with the needed permission' do
+          let(:required_permission) { 'view_group_pages' }
+          let(:launch_type) { 'global_navigation' }
+
+          it { is_expected.to eq true }
+        end
+      end
+    end
+
   end
 
   describe "#global_navigation_tools" do
@@ -479,6 +553,130 @@ describe ContextExternalTool do
     end
   end
 
+  describe "active?" do
+    subject { tool.active? }
+
+    let(:tool) { external_tool_model(opts: tool_opts) }
+    let(:tool_opts) { {} }
+
+    it { is_expected.to eq true }
+
+    context 'when "workflow_state" is "deleted"' do
+      let(:tool_opts) { { workflow_state: 'deleted' } }
+
+      it { is_expected.to eq false }
+    end
+
+    context 'when "workflow_state" is "disabled"' do
+      let(:tool_opts) { { workflow_state: 'disabled' } }
+
+      it { is_expected.to eq false }
+    end
+  end
+
+  describe "uses_preferred_lti_version?" do
+    subject { tool.uses_preferred_lti_version? }
+
+    let_once(:tool) { external_tool_model }
+
+    it { is_expected.to eq false }
+
+    context 'when the tool uses LTI 1.3' do
+      before do
+        tool.use_1_3 = true
+        tool.save!
+      end
+
+      it { is_expected.to eq true }
+    end
+  end
+
+  describe "from_content_tag" do
+    subject { ContextExternalTool.from_content_tag(*arguments) }
+
+    let(:arguments) { [content_tag, tool.context] }
+    let(:assignment) { assignment_model(course: tool.context) }
+    let(:tool) { external_tool_model }
+    let(:content_tag_opts) { { url: tool.url, content_type: 'ContextExternalTool', context: assignment } }
+    let(:content_tag) { ContentTag.new(content_tag_opts) }
+
+    let(:lti_1_3_tool) do
+      t = tool.dup
+      t.use_1_3 = true
+      t.save!
+      t
+    end
+
+    it { is_expected.to eq tool }
+
+    context 'when the tool is linked to the tag by id (LTI 1.1)' do
+      let(:content_tag_opts) { super().merge({ content_id: tool.id }) }
+
+      it { is_expected.to eq tool }
+
+      context 'and an LTI 1.3 tool has a conflicting URL' do
+        let(:arguments) do
+          [content_tag, tool.context]
+        end
+
+        before { lti_1_3_tool }
+
+        it { is_expected.to be_use_1_3 }
+      end
+    end
+
+    context 'when the tool is linked to a tag by id (LTI 1.3)' do
+      let(:content_tag_opts) { super().merge({ content_id: lti_1_3_tool.id }) }
+      let(:duplicate_1_3_tool) do
+        t = lti_1_3_tool.dup
+        t.save!
+        t
+      end
+
+      context 'and an LTI 1.1 tool has a conflicting URL' do
+
+        before { tool } # intitialized already, but included for clarity
+
+        it { is_expected.to eq lti_1_3_tool }
+
+        context 'and there are multiple matching LTI 1.3 tools' do
+          before { duplicate_1_3_tool }
+
+          let(:arguments) { [content_tag, tool.context] }
+          let(:content_tag_opts) { super().merge({ content_id: lti_1_3_tool.id }) }
+
+          it { is_expected.to eq lti_1_3_tool }
+        end
+
+        context 'and the LTI 1.3 tool gets reinstalled' do
+          before do
+            # "install" a copy of the tool
+            duplicate_1_3_tool
+
+            # "uninstall" the original tool
+            lti_1_3_tool.destroy!
+          end
+
+          it { is_expected.to eq duplicate_1_3_tool }
+        end
+      end
+    end
+
+    context 'when there are blank arguments' do
+      context 'when the content tag argument is blank' do
+        let(:arguments) { [nil, tool.context] }
+
+        it { is_expected.to eq nil }
+      end
+
+      context 'when the context argument is blank' do
+        let(:arguments) { [nil, tool.context] }
+
+        it { is_expected.to eq nil }
+      end
+    end
+  end
+
   describe "find_external_tool" do
     it "should match on the same domain" do
       @tool = @course.context_external_tools.create!(:name => "a", :domain => "google.com", :consumer_key => '12345', :shared_secret => 'secret')
@@ -726,6 +924,82 @@ describe ContextExternalTool do
         tool = ContextExternalTool.find_external_tool('http://www.tool.com/launch?p1=2082', Course.find(@course.id))
         expect(tool.tool_id).to eq('real')
       end
+
+      context 'and there is a difference in LTI version' do
+        subject { ContextExternalTool.find_external_tool(requested_url, context) }
+
+        before do
+          # Creation order is important. Be default Canvas uses
+          # creation order as a tie-breaker. Creating the LTI 1.3
+          # tool first ensures we are actually exercising the preferred
+          # LTI version matching logic.
+          lti_1_1_tool
+          lti_1_3_tool
+        end
+
+        let(:context) { @course }
+        let(:domain) { 'www.test.com' }
+        let(:opts) { { url: url, domain: domain } }
+        let(:requested_url) { "" }
+        let(:url) { 'https://www.test.com/foo?bar=1' }
+        let(:lti_1_1_tool) { external_tool_model(context: context, opts: opts) }
+        let(:lti_1_3_tool) do
+          t = external_tool_model(context: context, opts: opts)
+          t.use_1_3 = true
+          t.save!
+          t
+        end
+
+        context 'with an exact URL match' do
+          let(:requested_url) { url }
+
+          it { is_expected.to eq lti_1_3_tool }
+        end
+
+        context 'with a partial URL match' do
+          let(:requested_url) { "#{url}&extra_param=1" }
+
+          it { is_expected.to eq lti_1_3_tool }
+        end
+
+        context 'whith a domain match' do
+          let(:requested_url) { "https://www.test.com/another_endpoint" }
+
+          it { is_expected.to eq lti_1_3_tool }
+        end
+      end
+    end
+
+    context('with a client id') do
+      let(:url) { 'http://test.com' }
+      let(:tool_params) do
+        {
+          name: "a",
+          url: url,
+          consumer_key: '12345',
+          shared_secret: 'secret',
+        }
+      end
+      let!(:tool1) { @course.context_external_tools.create!(tool_params) }
+      let!(:tool2) do
+        @course.context_external_tools.create!(
+          tool_params.merge(developer_key: DeveloperKey.create!)
+        )
+      end
+
+      it 'preferred_tool_id has precedence over preferred_client_id' do
+        external_tool = ContextExternalTool.find_external_tool(
+          url, @course, tool1.id, nil, tool2.developer_key.id
+        )
+        expect(external_tool).to eq tool1
+      end
+
+      it 'finds the tool based on developer key id' do
+        external_tool = ContextExternalTool.find_external_tool(
+          url, @course, nil, nil, tool2.developer_key.id
+        )
+        expect(external_tool).to eq tool2
+      end
     end
   end
 
@@ -885,6 +1159,43 @@ describe ContextExternalTool do
         :name => "First Tool", :url => "http://www.example.com", :consumer_key => "key", :shared_secret => "secret", :developer_key => DeveloperKey.create!
       )
       expect(ContextExternalTool.all_tools_for(@course).placements(*Lti::ResourcePlacement::LEGACY_DEFAULT_PLACEMENTS).to_a).to eql([tool1])
+      end
+    end
+
+    describe 'enabling/disabling placements' do
+      let!(:tool) {
+        tool = @course.context_external_tools.create!(:name => "First Tool", :url => "http://www.example.com", :consumer_key => "key", :shared_secret => "secret")
+        tool.homework_submission = {enabled: true, selection_height: 300}
+        tool.save
+        tool
+      }
+
+      it 'moves inactive placement data back to active when re-enabled' do
+        tool.homework_submission = {enabled: false}
+        expect(tool.settings[:inactive_placements][:homework_submission][:enabled]).to be_falsey
+
+        tool.homework_submission = {enabled: true}
+        expect(tool.settings[:homework_submission]).to include({enabled: true, selection_height: 300})
+        expect(tool.settings.key?(:inactive_placements)).to be_falsey
+      end
+
+      it 'moves placement data to inactive placements when disabled' do
+        tool.homework_submission = {enabled: false}
+        expect(tool.settings[:inactive_placements][:homework_submission]).to include({enabled: false, selection_height: 300})
+        expect(tool.settings.key?(:homework_submission)).to be_falsey
+      end
+
+      it 'keeps already inactive placement data when disabled again' do
+        tool.homework_submission = {enabled: false}
+        expect(tool.settings[:inactive_placements][:homework_submission]).to include({enabled: false, selection_height: 300})
+
+        tool.homework_submission = {enabled: false}
+        expect(tool.settings[:inactive_placements][:homework_submission]).to include({enabled: false, selection_height: 300})
+      end
+
+      it 'keeps already active placement data when enabled again' do
+        tool.homework_submission = {enabled: true}
+        expect(tool.settings[:homework_submission]).to include({enabled: true, selection_height: 300})
       end
     end
   end
@@ -1484,6 +1795,13 @@ describe ContextExternalTool do
         root_account: @account, user: @user, context: @account)[:original_visibility]).to eq 'admins'
     end
 
+    it "should not let concluded teachers see admin tools" do
+      course_with_teacher(:account => @account, :active_all => true)
+      @course.enrollment_term.enrollment_dates_overrides.create!(:enrollment_type => "TeacherEnrollment", :end_at => 1.week.ago)
+      expect(ContextExternalTool.global_navigation_granted_permissions(
+        root_account: @account, user: @user, context: @account)[:original_visibility]).to eq 'members'
+    end
+
     it "should not let students see admin tools" do
       course_with_student(:account => @account, :active_all => true)
       expect(ContextExternalTool.global_navigation_granted_permissions(
@@ -1773,6 +2091,75 @@ describe ContextExternalTool do
         json = ContextExternalTool.editor_button_json([tool], @course, user_with_pseudonym)
         expect(json[0][:description]).to eq "<p><a href=\"http://the.url\" target=\"_blank\">link text</a></p>\n"
       end
+    end
+  end
+
+  describe 'is_rce_favorite' do
+    def tool_in_context(context)
+      ContextExternalTool.create!(
+        context: context,
+        consumer_key: 'key',
+        shared_secret: 'secret',
+        name: 'test tool',
+        url: 'http://www.tool.com/launch',
+        editor_button: {url: 'http://example.com', icon_url: 'http://example.com'}
+      )
+    end
+
+    it 'can be an rce favorite if it has an editor_button placement' do
+      tool = tool_in_context(@root_account)
+      expect(tool.can_be_rce_favorite?).to eq true
+    end
+
+    it 'cannot be an rce favorite if no editor_button placement' do
+      tool = tool_in_context(@root_account)
+      tool.editor_button = nil
+      tool.save!
+      expect(tool.can_be_rce_favorite?).to eq false
+    end
+
+    it 'does not set tools as an rce favorite for any context by default' do
+      sub_account = @root_account.sub_accounts.create!
+      tool = tool_in_context(@root_account)
+      expect(tool.is_rce_favorite_in_context?(@root_account)).to eq false
+      expect(tool.is_rce_favorite_in_context?(sub_account)).to eq false
+    end
+
+    it 'inherits from the old is_rce_favorite column if the accounts have not be seen up yet' do
+      sub_account = @root_account.sub_accounts.create!
+      tool = tool_in_context(@root_account)
+      tool.is_rce_favorite = true
+      tool.save!
+      expect(tool.is_rce_favorite_in_context?(@root_account)).to eq true
+      expect(tool.is_rce_favorite_in_context?(sub_account)).to eq true
+    end
+
+    it 'inherits from root account configuration if not set on sub-account' do
+      sub_account = @root_account.sub_accounts.create!
+      tool = tool_in_context(@root_account)
+      @root_account.settings[:rce_favorite_tool_ids] = {value: [tool.global_id]}
+      @root_account.save!
+      expect(tool.is_rce_favorite_in_context?(@root_account)).to eq true
+      expect(tool.is_rce_favorite_in_context?(sub_account)).to eq true
+    end
+
+    it 'overrides with sub-account configuration if specified' do
+      sub_account = @root_account.sub_accounts.create!
+      tool = tool_in_context(@root_account)
+      @root_account.settings[:rce_favorite_tool_ids] = {value: [tool.global_id]}
+      @root_account.save!
+      sub_account.settings[:rce_favorite_tool_ids] = {value: []}
+      sub_account.save!
+      expect(tool.is_rce_favorite_in_context?(@root_account)).to eq true
+      expect(tool.is_rce_favorite_in_context?(sub_account)).to eq false
+    end
+
+    it 'can set sub-account tools as favorites' do
+      sub_account = @root_account.sub_accounts.create!
+      tool = tool_in_context(sub_account)
+      sub_account.settings[:rce_favorite_tool_ids] = {value: [tool.global_id]}
+      sub_account.save!
+      expect(tool.is_rce_favorite_in_context?(sub_account)).to eq true
     end
   end
 end

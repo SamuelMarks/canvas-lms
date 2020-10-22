@@ -21,7 +21,10 @@ class ContextModuleProgression < ActiveRecord::Base
 
   belongs_to :context_module
   belongs_to :user
+  belongs_to :root_account, class_name: 'Account'
+
   before_save :set_completed_at
+  before_create :set_root_account_id
 
   after_save :touch_user
 
@@ -41,6 +44,10 @@ class ContextModuleProgression < ActiveRecord::Base
     else
       self.completed_at = nil
     end
+  end
+
+  def set_root_account_id
+    self.root_account_id = self.context_module.root_account_id
   end
 
   def finished_item?(item)
@@ -312,7 +319,7 @@ class ContextModuleProgression < ActiveRecord::Base
   def mark_as_outdated!
     if self.new_record?
       mark_as_outdated
-      Shackles.activate(:master) do
+      GuardRail.activate(:primary) do
         self.save!
       end
     else
@@ -419,7 +426,7 @@ class ContextModuleProgression < ActiveRecord::Base
 
       evaluate_current_position
 
-      Shackles.activate(:master) do
+      GuardRail.activate(:primary) do
         self.save
       end
 
@@ -444,7 +451,7 @@ class ContextModuleProgression < ActiveRecord::Base
     end
 
     # invalidate all, then re-evaluate each
-    Shackles.activate(:master) do
+    GuardRail.activate(:primary) do
       ContextModuleProgression.where(:id => progressions, :current => true).update_all(:current => false)
       User.where(:id => progressions.map(&:user_id)).touch_all
 

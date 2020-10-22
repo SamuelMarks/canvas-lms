@@ -35,25 +35,6 @@ describe "calendar2" do
     end
 
     describe "main calendar" do
-      it "should validate appointment group popup link functionality" do
-        create_appointment_group
-        ag = AppointmentGroup.first
-        ag.appointments.first.reserve_for @student, @me
-
-        @user = @me
-        get "/calendar2"
-
-        # navigate to the next month for end of month
-        f('.navigate_next').click unless Time.now.utc.month == (Time.now.utc + 1.day).month
-        fj('.fc-event:visible').click
-        expect(fj("#popover-0")).to be_displayed
-        expect_new_page_load { driver.execute_script("$('#popover-0 .view_event_link').hover().click()") }
-
-
-        expect(f('#scheduler')).to have_class('active')
-        expect(f('#appointment-group-list')).to include_text(ag.title)
-      end
-
       context "the event modal" do
         it "should allow other users to see attendees after reservation" do
           create_appointment_group(
@@ -133,14 +114,15 @@ describe "calendar2" do
             :participant_visibility => "protected"
           )
           ag1 = AppointmentGroup.first
-          # create an appointment and cancel appointment to make no participants
           ag1.appointments.first.reserve_for @student, @student
-          ag1.appointments.first.reserve_for @student, @student, cancel_existing: true
           get "/calendar2"
           # navigate to the next month for end of month
           f('.navigate_next').click unless Time.now.utc.month == (Time.now.utc + 1.day).month
           fj('.fc-event:visible').click
-          expect(f("#reservations")).not_to contain_css("#attendees_header_text")
+          f('.unreserve_event_link').click
+          fj("button:contains('Delete')").click
+          wait_for_ajaximations
+          expect(f('.fc-body')).not_to contain_css('.fc-event')
         end
       end
 
@@ -195,7 +177,7 @@ describe "calendar2" do
         group.add_user @student
         group.save!
         get '/calendar2'
-        fj('.calendar .fc-week .fc-today').click
+        move_to_click_element(fj('.calendar .fc-week .fc-today'))
         edit_event_dialog = f('#edit_event_tabs')
         expect(edit_event_dialog).to be_displayed
         edit_event_form = edit_event_dialog.find('#edit_calendar_event_form')

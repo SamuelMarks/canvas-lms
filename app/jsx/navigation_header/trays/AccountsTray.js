@@ -20,7 +20,8 @@ import I18n from 'i18n!AccounntsTray'
 import React from 'react'
 import {bool, arrayOf, shape, string} from 'prop-types'
 import {View} from '@instructure/ui-layout'
-import {Heading, List, Spinner} from '@instructure/ui-elements'
+import {Heading, List} from '@instructure/ui-elements'
+import {Spinner} from '@instructure/ui-spinner'
 import {Link} from '@instructure/ui-link'
 
 export default function AccountsTray({accounts, hasLoaded}) {
@@ -52,7 +53,7 @@ export default function AccountsTray({accounts, hasLoaded}) {
             ])
         ) : (
           <List.Item>
-            <Spinner size="small" title={I18n.t('Loading')} />
+            <Spinner size="small" renderTitle={I18n.t('Loading')} />
           </List.Item>
         )}
       </List>

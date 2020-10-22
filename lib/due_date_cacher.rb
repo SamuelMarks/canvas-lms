@@ -82,7 +82,7 @@ class DueDateCacher
   def self.recompute(assignment, update_grades: false, executing_user: nil)
     current_caller = caller(1..1).first
     Rails.logger.debug "DDC.recompute(#{assignment&.id}) - #{current_caller}"
-    return unless assignment.active?
+    return unless assignment.persisted? && assignment.active?
     # We use a strand here instead of a singleton because a bunch of
     # assignment updates with upgrade_grades could end up causing
     # score table fights.
@@ -97,7 +97,7 @@ class DueDateCacher
       executing_user: executing_user
     }
 
-    recompute_course(assignment.context, opts)
+    recompute_course(assignment.context, **opts)
   end
 
   def self.recompute_course(course, assignments: nil, inst_jobs_opts: {}, run_immediately: false, update_grades: false, original_caller: caller(1..1).first, executing_user: nil)
@@ -168,13 +168,14 @@ class DueDateCacher
     # in a transaction on the correct shard:
     @course.shard.activate do
       values = []
+
+      assignments_by_id = Assignment.find(@assignment_ids).index_by(&:id)
+
       effective_due_dates.to_hash.each do |assignment_id, student_due_dates|
         students_without_priors = student_due_dates.keys - enrollment_counts.prior_student_ids
-        existing_anonymous_ids = Submission.where.not(user: nil).
-          where(user: students_without_priors).
-          anonymous_ids_for(assignment_id)
+        existing_anonymous_ids = existing_anonymous_ids_by_assignment_id[assignment_id]
 
-        create_moderation_selections_for_assignment(assignment_id, student_due_dates.keys, @user_ids)
+        create_moderation_selections_for_assignment(assignments_by_id[assignment_id], student_due_dates.keys, @user_ids)
 
         quiz_lti = quiz_lti_assignments.include?(assignment_id)
 
@@ -186,28 +187,32 @@ class DueDateCacher
           anonymous_id = Anonymity.generate_id(existing_ids: existing_anonymous_ids)
           existing_anonymous_ids << anonymous_id
           sql_ready_anonymous_id = Submission.connection.quote(anonymous_id)
-          values << [assignment_id, student_id, due_date, grading_period_id, sql_ready_anonymous_id, quiz_lti]
+          values << [assignment_id, student_id, due_date, grading_period_id, sql_ready_anonymous_id, quiz_lti, @course.root_account_id]
         end
       end
 
+      assignments_to_delete_all_submissions_for = []
       # Delete submissions for students who don't have visibility to this assignment anymore
       @assignment_ids.each do |assignment_id|
         assigned_student_ids = effective_due_dates.find_effective_due_dates_for_assignment(assignment_id).keys
-        submission_scope = Submission.active.where(assignment_id: assignment_id)
 
         if @user_ids.blank? && assigned_student_ids.blank? && enrollment_counts.prior_student_ids.blank?
-          submission_scope.in_batches.update_all(workflow_state: :deleted, updated_at: Time.zone.now)
+          assignments_to_delete_all_submissions_for << assignment_id
         else
           # Delete the users we KNOW we need to delete in batches (it makes the database happier this way)
           deletable_student_ids =
             enrollment_counts.accepted_student_ids - assigned_student_ids - enrollment_counts.prior_student_ids
           deletable_student_ids.each_slice(1000) do |deletable_student_ids_chunk|
             # using this approach instead of using .in_batches because we want to limit the IDs in the IN clause to 1k
-            submission_scope.where(user_id: deletable_student_ids_chunk).
+            Submission.active.where(assignment_id: assignment_id, user_id: deletable_student_ids_chunk).
               update_all(workflow_state: :deleted, updated_at: Time.zone.now)
           end
           User.clear_cache_keys(deletable_student_ids, :submissions)
         end
+      end
+      assignments_to_delete_all_submissions_for.each_slice(50) do |assignment_slice|
+        subs = Submission.active.where(assignment_id: assignment_slice).limit(1_000)
+        while subs.update_all(workflow_state: :deleted, updated_at: Time.zone.now) > 0; end
       end
 
       # Get any stragglers that might have had their enrollment removed from the course
@@ -249,7 +254,7 @@ class DueDateCacher
               cached_quiz_lti = vals.cached_quiz_lti,
               updated_at = now() AT TIME ZONE 'UTC'
             FROM (VALUES #{batch_values.join(',')})
-              AS vals(assignment_id, student_id, due_date, grading_period_id, anonymous_id, cached_quiz_lti)
+              AS vals(assignment_id, student_id, due_date, grading_period_id, anonymous_id, cached_quiz_lti, root_account_id)
             WHERE submissions.user_id = vals.student_id AND
                   submissions.assignment_id = vals.assignment_id AND
                   (
@@ -262,16 +267,17 @@ class DueDateCacher
                     (submissions.cached_quiz_lti IS DISTINCT FROM vals.cached_quiz_lti)
                   );
           INSERT INTO #{Submission.quoted_table_name}
-            (assignment_id, user_id, workflow_state, created_at, updated_at, context_code,
-            cached_due_date, grading_period_id, anonymous_id, cached_quiz_lti)
+            (assignment_id, user_id, workflow_state, created_at, updated_at, course_id,
+            cached_due_date, grading_period_id, anonymous_id, cached_quiz_lti, root_account_id)
             SELECT
               assignments.id, vals.student_id, 'unsubmitted',
               now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC',
-              assignments.context_code, vals.due_date::timestamptz, vals.grading_period_id::integer,
+              assignments.context_id, vals.due_date::timestamptz, vals.grading_period_id::integer,
               vals.anonymous_id,
-              vals.cached_quiz_lti
+              vals.cached_quiz_lti,
+              vals.root_account_id
             FROM (VALUES #{batch_values.join(',')})
-              AS vals(assignment_id, student_id, due_date, grading_period_id, anonymous_id, cached_quiz_lti)
+              AS vals(assignment_id, student_id, due_date, grading_period_id, anonymous_id, cached_quiz_lti, root_account_id)
             INNER JOIN #{Assignment.quoted_table_name} assignments
               ON assignments.id = vals.assignment_id
             LEFT OUTER JOIN #{Submission.quoted_table_name} submissions
@@ -316,7 +322,7 @@ class DueDateCacher
     @enrollment_counts ||= begin
       counts = EnrollmentCounts.new([], [], [])
 
-      Shackles.activate(:slave) do
+      GuardRail.activate(:secondary) do
         # The various workflow states below try to mimic similarly named scopes off of course
         scope = Enrollment.select(
           :user_id,
@@ -411,5 +417,14 @@ class DueDateCacher
         merge(ContextExternalTool.quiz_lti).
         where(context_type: 'Assignment', context_id: @assignment_ids).
         where.not(workflow_state: 'deleted').distinct.pluck(:context_id).to_set
+  end
+
+  def existing_anonymous_ids_by_assignment_id
+    @existing_anonymous_ids_by_assignment_id ||=
+      Submission.
+        anonymized.
+        for_assignment(effective_due_dates.to_hash.keys).
+        pluck(:assignment_id, :anonymous_id).
+        each_with_object(Hash.new { |h,k| h[k] = [] }) { |data, h| h[data.first] << data.last }
   end
 end

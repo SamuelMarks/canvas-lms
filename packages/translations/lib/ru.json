@@ -5,6 +5,9 @@
     "add_8523c19b": {
         "message": "Добавить"
     },
+    "add_another_f4e50d57": {
+        "message": "Добавить другой"
+    },
     "add_cc_subtitles_55f0394e": {
         "message": "Добавить копию/подзаголовки"
     },
@@ -29,8 +32,8 @@
     "align_right_9bad3ac1": {
         "message": "Выровнять по правому краю"
     },
-    "alignment_and_indentation_f7de34bf": {
-        "message": "Согласование и выравнивание"
+    "alignment_and_lists_5cebcb69": {
+        "message": "Согласование и списки"
     },
     "all_4321c3a1": {
         "message": "Все"
@@ -47,11 +50,17 @@
     "alt_text_611fb322": {
         "message": "Альтернативный текст"
     },
+    "an_error_occured_reading_the_file_ff48558b": {
+        "message": "Произошла ошибка при чтении файла"
+    },
     "an_error_occurred_attempting_to_dismiss_the_opport_f86e0667": {
         "message": "Произошла ошибка при попытке отклонить эту возможность."
     },
-    "an_error_occurred_generating_the_file_preview_cf259955": {
-        "message": "Произошла ошибка при создании предварительного просмотра файла"
+    "an_error_occurred_making_a_network_request_d1bda348": {
+        "message": "Произошла ошибка, что привело к созданию сетевого запроса"
+    },
+    "an_error_occurred_uploading_your_media_71f1444d": {
+        "message": "Произошла ошибка при отправке вашего мультимедиа."
     },
     "announcement_fb4cb645": {
         "message": "Объявление"
@@ -107,17 +116,29 @@
     "assignmenttype_title_reminder_datetime_33fa66d5": {
         "message": "{ assignmentType } { title }, напоминание { datetime }."
     },
+    "attributes_963ba262": {
+        "message": "Атрибуты"
+    },
     "audio_and_video_recording_is_not_available_c7173efc": {
         "message": "Запись аудио и видео недоступна."
     },
     "audio_player_for_title_20cc70d": {
         "message": "Аудиоплеер для { title }"
     },
+    "auto_saved_content_exists_would_you_like_to_load_t_fee528f2": {
+        "message": "Существует сохраненное в автоматическом режиме содержимое. Вы хотите загрузить сохраненное в автоматическом режиме содержимое?"
+    },
     "automatically_open_an_in_line_preview_preview_disp_ed784ffe": {
         "message": "Автоматически открывать встроенный предварительный просмотр. (Предварительный просмотр отображается только после сохранения)"
     },
+    "available_folders_694d0436": {
+        "message": "Доступные папки"
+    },
     "beginning_of_your_to_do_history_61ef2dce": {
         "message": "Начало вашей истории задач"
+    },
+    "c_2001_acme_inc_283f7f80": {
+        "message": "(c) 2001 г. Acme Inc."
     },
     "calendar_a8563bb2": {
         "message": "Календарь:"
@@ -131,11 +152,11 @@
     "canvas_planner_98ed106": {
         "message": "Планировщик Canvas"
     },
-    "canvas_plugins_705a5016": {
-        "message": "Подключаемые модули Canvas"
-    },
     "choose_caption_file_9c45bc4e": {
         "message": "Выберите файл подписи к изображению"
+    },
+    "choose_usage_rights_33683854": {
+        "message": "Выбрать права на использование..."
     },
     "circle_unordered_list_9e3a0763": {
         "message": "заключить неупорядоченный список в круг"
@@ -143,14 +164,20 @@
     "clear_selected_file_82388e50": {
         "message": "Очистить выбранный файл"
     },
-    "click_any_page_to_insert_a_link_to_that_page_ac920c02": {
-        "message": "Щелкните любую страницу, чтобы вставить ссылку в эту страницу."
+    "clear_selected_file_filename_2fe8a58e": {
+        "message": "Удалить выбранный файл: { filename }"
     },
     "click_to_embed_imagename_c41ea8df": {
         "message": "Щелкните, чтобы внедрить { imageName }"
     },
+    "click_to_hide_preview_3c707763": {
+        "message": "Нажмите, чтобы скрыть предпросмотр"
+    },
     "click_to_insert_a_link_into_the_editor_c19613aa": {
         "message": "Нажмите, чтобы вставить ссылку в редактор."
+    },
+    "click_to_show_preview_faa27051": {
+        "message": "Нажмите, чтобы показать предпросмотр"
     },
     "close_a_menu_or_dialog_also_returns_you_to_the_edi_739079e6": {
         "message": "Закройте меню или диалог. Также возвращает вас в область редактора"
@@ -170,6 +197,9 @@
     "computer_1d7dfa6f": {
         "message": "Компьютер"
     },
+    "content_1440204b": {
+        "message": "Содержимое"
+    },
     "content_is_still_being_uploaded_if_you_continue_it_8f06d0cb": {
         "message": "Выгрузка контента еще не завершена, в случае продолжения вами данного действия он не будет внедрен правильно."
     },
@@ -178,6 +208,9 @@
     },
     "content_type_2cf90d95": {
         "message": "Тип содержимого"
+    },
+    "copyright_holder_66ee111": {
+        "message": "Правообладатель:"
     },
     "count_plural_0_0_words_one_1_word_other_words_acf32eca": {
         "message": "{ count, plural,\n     =0 {0 слов}\n    one {1 слово}\n  other {# слов(-а)}\n}"
@@ -200,6 +233,9 @@
     "course_files_62deb8f8": {
         "message": "Файлы курса"
     },
+    "course_files_a31f97fc": {
+        "message": "Файлы курса"
+    },
     "course_images_f8511d04": {
         "message": "Изображения курса"
     },
@@ -214,6 +250,9 @@
     },
     "course_to_do_bcbbab54": {
         "message": "{ course } ЗАДАЧИ"
+    },
+    "creative_commons_license_725584ae": {
+        "message": "Лицензионное соглашение Creative Commons:"
     },
     "current_volume_level_c55ab825": {
         "message": "Уровень текущего объема"
@@ -238,6 +277,9 @@
     },
     "date_time_d9fbf2d7": {
         "message": "Дата и время:"
+    },
+    "decorative_image_3c28aa7d": {
+        "message": "Декоративное изображение"
     },
     "decrease_indent_de6343ab": {
         "message": "Уменьшить отступ"
@@ -266,8 +308,8 @@
     "dimensions_45ddb7b7": {
         "message": "Размеры"
     },
-    "directionality_ebcae6d0": {
-        "message": "направленность"
+    "directionality_26ae9e08": {
+        "message": "Направленность"
     },
     "disable_in_line_preview_2a675175": {
         "message": "Отключить встроенный предварительный просмотр."
@@ -299,6 +341,9 @@
     "display_text_link_opens_in_a_new_tab_75e9afc9": {
         "message": "Показать текстовую ссылку (открывается в новой вкладке)"
     },
+    "document_678cd7bf": {
+        "message": "Документ"
+    },
     "documents_81393201": {
         "message": "Документы"
     },
@@ -317,9 +362,6 @@
     "drag_handle_use_up_and_down_arrows_to_resize_e29eae5c": {
         "message": "Перетаскивание. Используйте стрелки вверх и вниз для изменения размера"
     },
-    "drop_and_drop_or_click_to_browse_your_computer_1acfa42d": {
-        "message": "Перетащите или щелкните, чтобы просмотреть свой компьютер"
-    },
     "due_5d7267be": {
         "message": "Срок:"
     },
@@ -334,6 +376,9 @@
     },
     "edit_c5fbea07": {
         "message": "Редактировать"
+    },
+    "edit_equation_f5279959": {
+        "message": "Редактировать уравнение"
     },
     "edit_link_7f53bebb": {
         "message": "Редактировать ссылку"
@@ -362,8 +407,11 @@
     "embed_video_a97a64af": {
         "message": "Вставить видео"
     },
-    "embed_video_code_703e10f2": {
-        "message": "Вставить код видео"
+    "embedded_content_aaeb4d3d": {
+        "message": "интегрированный контент"
+    },
+    "equation_1c5ac93c": {
+        "message": "Формула"
     },
     "error_loading_grades_e0b38f4d": {
         "message": "Ошибка загрузки оценок"
@@ -386,6 +434,9 @@
     "external_links_3d9f074e": {
         "message": "Внешние ссылки"
     },
+    "external_tools_6e77821": {
+        "message": "Внешние инструменты"
+    },
     "extra_large_b6cdf1ff": {
         "message": "Очень крупный"
     },
@@ -406,6 +457,12 @@
     },
     "file_name_8fd421ff": {
         "message": "Имя файла"
+    },
+    "file_upload_failed_af22dd91": {
+        "message": "Не удалось загрузить файл"
+    },
+    "file_uploading_56c9c0c8": {
+        "message": "Отправка файла"
     },
     "file_url_c12b64be": {
         "message": "URL файла"
@@ -428,14 +485,26 @@
     "finish_bc343002": {
         "message": "Закончить"
     },
-    "focus_the_popup_context_toolbar_7979f4f8": {
-        "message": "Сконцентрироваться на всплывающей контекстной панели инструментов"
+    "focus_element_options_toolbar_18d993e": {
+        "message": "Рассмотрение панели инструментов опций элементов"
+    },
+    "folder_tree_fbab0726": {
+        "message": "Структура папки"
+    },
+    "format_4247a9c5": {
+        "message": "Формат"
     },
     "formatting_5b143aa8": {
         "message": "Форматирование"
     },
+    "found_auto_saved_content_3f6e4ca5": {
+        "message": "Найдено сохраненное в автоматическом режиме содержимое"
+    },
     "found_count_plural_0_results_one_result_other_resu_46aeaa01": {
         "message": "Найдено { count, plural,\n     =0 {# результата(-ов)}\n    one {# результат}\n  other {# результата(-ов)}\n}"
+    },
+    "fullscreen_873bf53f": {
+        "message": "На весь экран"
     },
     "generating_preview_45b53be0": {
         "message": "Создание предварительного просмотра"
@@ -461,8 +530,23 @@
     "grades_loaded_5056277c": {
         "message": "Оценки загружены"
     },
+    "group_documents_8bfd6ae6": {
+        "message": "Документы группы"
+    },
     "group_files_4324f3df": {
         "message": "Файлы группы"
+    },
+    "group_files_82e5dcdb": {
+        "message": "Файлы группы"
+    },
+    "group_images_98e0ac17": {
+        "message": "Изображения группы"
+    },
+    "group_links_9493129e": {
+        "message": "Групповые ссылки"
+    },
+    "group_media_2f3d128a": {
+        "message": "Медиа группы"
     },
     "group_navigation_99f191a": {
         "message": "Навигация группы"
@@ -479,6 +563,18 @@
     "height_69b03e15": {
         "message": "Высота"
     },
+    "i_have_obtained_permission_to_use_this_file_6386f087": {
+        "message": "Разрешение на использование данного файла получено."
+    },
+    "i_hold_the_copyright_71ee91b1": {
+        "message": "Я являюсь правообладателем"
+    },
+    "if_you_do_not_select_usage_rights_now_this_file_wi_14e07ab5": {
+        "message": "Если вы не выберете права пользования сейчас, этот файл не будет опубликован после отправки."
+    },
+    "image_8ad06": {
+        "message": "Изображение"
+    },
     "image_options_5412d02c": {
         "message": "Опции изображения"
     },
@@ -490,6 +586,9 @@
     },
     "increase_indent_6d550a4a": {
         "message": "Увеличить отступ"
+    },
+    "insert_593145ef": {
+        "message": "Вставить"
     },
     "insert_equella_links_49a8dacd": {
         "message": "Вставить ссылки на Equella"
@@ -506,6 +605,9 @@
     "invalid_file_type_881cc9b2": {
         "message": "Неверный тип файла"
     },
+    "invalid_url_cbde79f": {
+        "message": "Неверный URL"
+    },
     "items_completed_items_plural_1_item_other_items_717d579f": {
         "message": "{ items } завершенный(-е) { items, plural,\n     =1 {элемент}\n  other {элементы}\n}"
     },
@@ -518,20 +620,14 @@
     "late_2be42b88": {
         "message": "Поздно"
     },
-    "left_to_right_d6da6d7e": {
-        "message": "слева направо"
+    "left_to_right_e9b4fd06": {
+        "message": "Слева направо"
     },
     "link_7262adec": {
         "message": "Ссылка"
     },
     "link_options_a16b758b": {
         "message": "Параметры ссылки"
-    },
-    "link_to_other_content_in_the_course_879163b5": {
-        "message": "Ссылка на другое содержание в этом курсе."
-    },
-    "link_to_other_content_in_the_group_3fe25379": {
-        "message": "Ссылка на другое содержание в этой группе."
     },
     "links_14b70841": {
         "message": "Ссылки"
@@ -575,6 +671,9 @@
     "loading_failed_e6a9d8ef": {
         "message": "Сбой загрузки."
     },
+    "loading_folders_d8b5869e": {
+        "message": "Загрузка папок"
+    },
     "loading_grades_c842c887": {
         "message": "Загрузка оценок"
     },
@@ -590,6 +689,9 @@
     "location_3b6ff307": {
         "message": "Местоположение:"
     },
+    "locked_762f138b": {
+        "message": "Заблокировано"
+    },
     "looks_like_there_isn_t_anything_here_d9bcef49": {
         "message": "Похоже, здесь ничего нет"
     },
@@ -602,8 +704,8 @@
     "mic_a7f3d311": {
         "message": "Микрофон"
     },
-    "miscellaneous_and_apps_f450a387": {
-        "message": "Прочее и приложения"
+    "miscellaneous_e9818229": {
+        "message": "Разное"
     },
     "missing_1a256b3b": {
         "message": "Отсутствует"
@@ -616,6 +718,9 @@
     },
     "must_be_at_least_width_x_height_px_41dc825e": {
         "message": "Должно быть как минимум { width } x { height }пикселов"
+    },
+    "my_files_2f621040": {
+        "message": "Мои файлы"
     },
     "my_grades_98834476": {
         "message": "Мои оценки"
@@ -641,11 +746,14 @@
     "next_page_d2a39853": {
         "message": "Следующая страница"
     },
-    "no_alt_text_decorative_image_f318fc0e": {
-        "message": "Нет альтернативного текста (декоративное изображение)"
-    },
     "no_due_dates_assigned_e8f5bac8": {
         "message": "Даты выполнения не заданы"
+    },
+    "no_e16d9132": {
+        "message": "Нет"
+    },
+    "no_file_chosen_9a880793": {
+        "message": "Не выбран ни один файл"
     },
     "no_grade_3b4d7f3e": {
         "message": "Нет оценки"
@@ -710,6 +818,9 @@
     "other_editor_shortcuts_may_be_found_at_404aba4a": {
         "message": "Другие ярлыки редактора можно найти на"
     },
+    "p_is_not_a_valid_protocol_which_must_be_ftp_http_h_adf13fc2": {
+        "message": "{ p } — недействительный протокол. Это должен быть ftp, http, https, mailto, skype, tel или может не указываться"
+    },
     "page_50c4823d": {
         "message": "Страница"
     },
@@ -749,6 +860,9 @@
     "preformatted_d0670862": {
         "message": "Предварительно форматированный"
     },
+    "preview_53003fd2": {
+        "message": "Предпросмотр"
+    },
     "preview_a3f8f854": {
         "message": "ПРЕДПРОСМОТР"
     },
@@ -757,6 +871,9 @@
     },
     "previous_page_928fc112": {
         "message": "Предыдущая страница"
+    },
+    "protocol_must_be_ftp_http_https_mailto_skype_tel_o_73beb4f8": {
+        "message": "Протокол должен быть ftp, http, https, mailto, skype, tel или может не указываться"
     },
     "pts_699bd9aa": {
         "message": "баллы"
@@ -772,6 +889,12 @@
     },
     "quizzes_7e598f57": {
         "message": "Тесты"
+    },
+    "raw_html_editor_e3993e41": {
+        "message": "Редактор Raw HTML"
+    },
+    "reading_a_media_track_file_failed_aborting_be051b20": {
+        "message": "Сбой чтения файла мультимедийного трека. Прерывание."
     },
     "record_7c9448b": {
         "message": "Запись"
@@ -791,11 +914,14 @@
     "replies_4a8577c8": {
         "message": "Ответы"
     },
+    "restore_auto_save_deccd84b": {
+        "message": "Восстановить автосохранение?"
+    },
     "rich_content_editor_2708ef21": {
         "message": "Редактор форматированного текста"
     },
-    "right_to_left_ec223c81": {
-        "message": "справа налево"
+    "right_to_left_9cfb092a": {
+        "message": "Справа налево"
     },
     "save_11a80ec3": {
         "message": "Сохранить"
@@ -842,6 +968,9 @@
     "size_b30e1077": {
         "message": "Размер"
     },
+    "size_of_file_is_greater_than_the_maximum_max_mb_al_6eb3fa9a": {
+        "message": "Размер { file } больше допустимого максимального размера файла в { max } Мб."
+    },
     "small_b070434a": {
         "message": "Маленький"
     },
@@ -853,6 +982,12 @@
     },
     "something_went_wrong_and_i_don_t_know_what_to_show_e0c54ec8": {
         "message": "Что-то пошло не так, и я не знаю, что вам показать."
+    },
+    "something_went_wrong_check_your_connection_and_try_2a7b2d13": {
+        "message": "Что-то пошло не так, проверьте подключение и попробуйте еще раз."
+    },
+    "something_went_wrong_d238c551": {
+        "message": "Что-то пошло не так"
     },
     "something_went_wrong_try_again_after_refreshing_th_e094eb8d": {
         "message": "Что-то пошло не так, обновите страницу и попробуйте еще раз"
@@ -896,11 +1031,17 @@
     "subscript_59744f96": {
         "message": "Надпись снизу"
     },
+    "success_file_uploaded_8174e93f": {
+        "message": "Успешно: Файл отправлен"
+    },
     "success_to_do_created_e34ed395": {
         "message": "Успешно: Задание создано"
     },
     "superscript_8cb349a2": {
         "message": "Надпись сверху"
+    },
+    "supported_file_types_srt_or_webvtt_7d827ed": {
+        "message": "Поддерживаемые типы файлов: SRT или WebVTT"
     },
     "switch_to_raw_html_editor_4c9ac7de": {
         "message": "Перейти в редактор raw html"
@@ -922,6 +1063,15 @@
     },
     "the_date_and_time_this_to_do_is_due_74c823d4": {
         "message": "Дата и время выполнения этого установлены на"
+    },
+    "the_material_is_in_the_public_domain_279c39a3": {
+        "message": "Материал находится в общедоступном домене"
+    },
+    "the_material_is_licensed_under_creative_commons_3242cb5e": {
+        "message": "Материал распространяется по лицензии Creative Commons"
+    },
+    "the_material_is_subject_to_an_exception_e_g_fair_u_a39c8ca2": {
+        "message": "Материал подпадает под действие правовой оговорки - например, касательно добросовестного использования, права цитирования или иной правовой оговорки согласно действующему законодательству об авторских правах"
     },
     "there_are_no_points_associated_with_this_item_449c712a": {
         "message": "Нет пунктов, связанных с этим элементом"
@@ -965,6 +1115,9 @@
     "tomorrow_at_date_b53f2cf1": {
         "message": "Завтра в { date }"
     },
+    "tools_2fcf772e": {
+        "message": "Инструменты"
+    },
     "totalresults_results_found_numdisplayed_results_cu_a0a44975": {
         "message": "{ totalResults } результатов найдено, { numDisplayed } результатов отображается в данный момент"
     },
@@ -992,9 +1145,6 @@
     "upload_document_253f0478": {
         "message": "Загрузить документ"
     },
-    "upload_error_f9c00e27": {
-        "message": "Ошибка при загрузке"
-    },
     "upload_file_fd2361b8": {
         "message": "Загрузить файл"
     },
@@ -1003,6 +1153,9 @@
     },
     "upload_media_ce31135a": {
         "message": "Загрузить медиа"
+    },
+    "upload_not_available_for_this_folder_8f8623c6": {
+        "message": "Отправка недоступна для этой папки"
     },
     "upload_record_media_e4207d72": {
         "message": "Загрузить/записать медиа"
@@ -1015,6 +1168,12 @@
     },
     "url_22a5f3b8": {
         "message": "URL"
+    },
+    "usage_right_ff96f3e2": {
+        "message": "Право на использование:"
+    },
+    "usage_rights_required_5fe4dd68": {
+        "message": "Права на использование (обязательно)"
     },
     "use_arrow_keys_to_navigate_options_2021cc50": {
         "message": "Используйте клавиши со стрелками для навигации по параметрам."
@@ -1055,6 +1214,9 @@
     "video_player_for_title_ffd9fbc4": {
         "message": "Видеоплеер для { title }"
     },
+    "view_ba339f93": {
+        "message": "Просмотр"
+    },
     "view_keyboard_shortcuts_34d1be0b": {
         "message": "Показать клавиши быстрого доступа"
     },
@@ -1073,6 +1235,9 @@
     "wiki_home_9cd54d0": {
         "message": "Домашняя страница вики"
     },
+    "yes_dde87d5": {
+        "message": "Да"
+    },
     "yesterday_at_date_1aa6d18e": {
         "message": "Вчера в { date }"
     },
@@ -1081,6 +1246,9 @@
     },
     "you_have_media_feedback_f5f9aba8": {
         "message": "У вас есть отзывы о мультимедиа."
+    },
+    "you_may_not_upload_an_empty_file_11c31eb2": {
+        "message": "Вы не можете отправить пустой файл."
     },
     "you_must_provide_a_date_and_time_a86839d2": {
         "message": "Необходимо указать дату и время."

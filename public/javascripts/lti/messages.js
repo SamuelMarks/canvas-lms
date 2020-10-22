@@ -52,14 +52,25 @@ function findDomForWindow(sourceWindow) {
 }
 
 export function ltiMessageHandler(e) {
+  if (e.data.source && e.data.source === 'react-devtools-bridge') {
+    return
+  }
+
   if (e.data.messageType) {
     handleLtiPostMessage(e)
     return
   }
 
   // Legacy post message handlers
+  let message
   try {
-    const message = JSON.parse(e.data)
+    message = typeof e.data === 'string' ? JSON.parse(e.data) : e.data
+  } catch (err) {
+    // unparseable message may not be meant for our handlers
+    return
+  }
+
+  try {
     switch (message.subject) {
       case 'lti.frameResize':
         const toolResizer = new ToolLaunchResizer()

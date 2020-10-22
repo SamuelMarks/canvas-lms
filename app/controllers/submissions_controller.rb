@@ -197,7 +197,7 @@ class SubmissionsController < SubmissionsBaseController
   #
   # @argument submission[submitted_at] [DateTime]
   #   Choose the time the submission is listed as submitted at.  Requires grading permission.
-  
+
   def create
     params[:submission] ||= {}
     user_id = params[:submission].delete(:user_id)
@@ -254,8 +254,7 @@ class SubmissionsController < SubmissionsBaseController
       :attachment_ids => []
     )
     submission_params[:group_comment] = value_to_boolean(submission_params[:group_comment])
-    submission_params[:attachments] = self.class.copy_attachments_to_submissions_folder(@context, params[:submission][:attachments].compact.uniq)
-
+    submission_params[:attachments] = Attachment.copy_attachments_to_submissions_folder(@context, params[:submission][:attachments].compact.uniq)
     begin
       @submission = @assignment.submit_homework(@submission_user, submission_params)
     rescue ActiveRecord::RecordInvalid => e
@@ -274,7 +273,20 @@ class SubmissionsController < SubmissionsBaseController
         log_asset_access(@assignment, "assignments", @assignment_group, 'submit')
         format.html do
           flash[:notice] = t('assignment_submit_success', 'Assignment successfully submitted.')
-          redirect_to course_assignment_url(@context, @assignment)
+          tardiness = case
+          when @submission.late?
+            2 # late
+          when @submission.cached_due_date.nil?
+            0 # don't know
+          else
+            1 # on time
+          end
+
+          if @submission.late? || !@domain_root_account&.feature_enabled?(:confetti_for_assignments)
+            redirect_to course_assignment_url(@context, @assignment, submitted: tardiness)
+          else
+            redirect_to course_assignment_url(@context, @assignment, submitted: tardiness, confetti: true)
+          end
         end
         format.json do
           if api_request?
@@ -284,7 +296,7 @@ class SubmissionsController < SubmissionsBaseController
               status: :created,
               location: api_v1_course_assignment_submission_url(@context, @assignment, @current_user)
           else
-            render :json => @submission.as_json(:include => :submission_comments), :status => :created,
+            render :json => @submission.as_json(:include => :submission_comments, :methods => :late), :status => :created,
               :location => course_gradebook_url(@submission.assignment.context)
           end
         end
@@ -375,18 +387,6 @@ class SubmissionsController < SubmissionsBaseController
   end
   private :lookup_existing_attachments
 
-  def self.copy_attachments_to_submissions_folder(assignment_context, attachments)
-    attachments.map do |attachment|
-      if attachment.folder && attachment.folder.for_submissions?
-        attachment # already in a submissions folder
-      elsif attachment.context.respond_to?(:submissions_folder)
-        attachment.copy_to_folder!(attachment.context.submissions_folder(assignment_context))
-      else
-        attachment # in a weird context; leave it alone
-      end
-    end
-  end
-
   def is_media_recording?
     return params[:submission][:submission_type] == 'media_recording'
   end
@@ -464,7 +464,7 @@ class SubmissionsController < SubmissionsBaseController
   private :has_file_attached?
 
   def extensions_allowed?
-    # if extensions are being restricted, check that the extension is whitelisted
+    # if extensions are being restricted, check that the extension is allowed
     # The first check here is for web interface submissions that contain only one file
     # The second check is for multiple submissions and API calls that use the uploaded_data parameter to pass a filename
     if @assignment.allowed_extensions.present?

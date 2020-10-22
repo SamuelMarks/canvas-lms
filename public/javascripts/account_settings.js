@@ -36,6 +36,9 @@ import './vendor/jquery.scrollTo'
 
 let reportsTabHasLoaded = false
 
+const _settings_smallTablet = window.matchMedia('(min-width: 550px)').matches
+const _settings_desktop = window.matchMedia('(min-width: 992px)').matches
+
 export function openReportDescriptionLink(event) {
   event.preventDefault()
   const title = $(this)
@@ -45,9 +48,10 @@ export function openReportDescriptionLink(event) {
   const $desc = $(this)
     .parent('.reports')
     .find('.report_description')
+  const responsiveWidth = _settings_desktop ? 800 : _settings_smallTablet ? 550 : 320
   $desc.clone().dialog({
     title,
-    width: 800
+    width: responsiveWidth
   })
 }
 
@@ -210,13 +214,14 @@ $(document).ready(function() {
               event.preventDefault()
               let data = $(this).data(),
                 $dialog = data.$report_dialog
+              const responsiveWidth = _settings_smallTablet ? 400 : 320
               if (!$dialog) {
                 $dialog = data.$report_dialog = $(this)
                   .parent('td')
                   .find('.report_dialog')
                   .dialog({
                     autoOpen: false,
-                    width: 400,
+                    width: responsiveWidth,
                     title: I18n.t('titles.configure_report', 'Configure Report')
                   })
               }

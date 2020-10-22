@@ -23,6 +23,7 @@ import {Alert} from '@instructure/ui-alerts'
 import {Button} from '@instructure/ui-buttons'
 import {ScreenReaderContent} from '@instructure/ui-a11y'
 import {TextArea} from '@instructure/ui-forms'
+import iframeAllowances from 'jsx/external_apps/lib/iframeAllowances'
 import OutlierScoreHelper from 'jsx/grading/helpers/OutlierScoreHelper'
 import quizzesNextSpeedGrading from 'jsx/grading/quizzesNextSpeedGrading'
 import StatusPill from 'jsx/grading/StatusPill'
@@ -79,6 +80,7 @@ import './jquery.instructure_forms' /* ajaxJSONFiles */
 import './jquery.doc_previews' /* loadDocPreview */
 import './jquery.instructure_date_and_time' /* datetimeString */
 import 'jqueryui/dialog'
+import 'jqueryui/menu'
 import './jquery.instructure_misc_helpers' /* replaceTags */
 import './jquery.instructure_misc_plugins' /* confirmDelete, showIf, hasScrollbar */
 import './jquery.keycodes'
@@ -111,6 +113,8 @@ let anonymizableUserId
 let anonymizableStudentId
 let anonymizableAuthorId
 let isModerated
+
+let commentSubmissionInProgress
 
 let $window
 let $full_width_container
@@ -183,7 +187,7 @@ let provisionalGraderDisplayNames
 let EG
 const customProvisionalGraderLabel = I18n.t('Custom')
 const anonymousAssignmentDetailedReportTooltip = I18n.t(
-  'Cannot view detailed reports for anonymous assignments until grades are unmuted.'
+  'Cannot view detailed reports for anonymous assignments until grades are posted.'
 )
 
 const HISTORY_PUSH = 'push'
@@ -313,17 +317,12 @@ function mergeStudentsAndSubmission() {
 
   // handle showing students only in a certain section.
   if (!jsonData.GROUP_GRADING_MODE) {
-    if (ENV.new_gradebook_enabled) {
-      sectionToShow = ENV.selected_section_id
-    } else {
-      sectionToShow = userSettings.contextGet('grading_show_only_section')
-    }
+    sectionToShow = ENV.selected_section_id
   }
 
-  // If we're using New Gradebook, we'll already have done the filtering by
-  // section on the server, so this is redundant (but not the worst thing in
-  // the world since we still need to send the user away if there are no
-  // students in the section). With Old Gradebook we still need to do it here.
+  // We have already have done the filtering by section on the server, so this
+  // is redundant (but not the worst thing in the world since we still need to
+  // send the user away if there are no students in the section).
   if (sectionToShow) {
     sectionToShow = sectionToShow.toString()
 
@@ -501,7 +500,6 @@ function initDropdown() {
 }
 
 function setupPostPolicies() {
-  if (!ENV.post_policies_enabled) return
   const {jsonData} = window
   const gradesPublished = !jsonData.moderated_grading || jsonData.grades_published_at != null
 
@@ -522,22 +520,10 @@ function setupPostPolicies() {
   renderPostGradesMenu()
 }
 
-function setupHeader({showMuteButton = true}) {
+function setupHeader() {
   const elements = {
     nav: $gradebook_header.find('#prev-student-button, #next-student-button'),
     settings: {form: $('#settings_form')}
-  }
-
-  if (showMuteButton) {
-    Object.assign(elements, {
-      mute: {
-        icon: $('#mute_link i'),
-        label: $('#mute_link .mute_label'),
-        link: $('#mute_link'),
-        modal: $('#mute_dialog')
-      },
-      unmute: {modal: $('#unmute_dialog')}
-    })
   }
 
   return {
@@ -545,20 +531,12 @@ function setupHeader({showMuteButton = true}) {
     courseId: utils.getParam('courses'),
     assignmentId: utils.getParam('assignment_id'),
     init() {
-      if (showMuteButton) {
-        this.muted = this.elements.mute.link.data('muted')
-      }
-
       this.addEvents()
       this.createModals()
       return this
     },
     addEvents() {
       this.elements.nav.click($.proxy(this.toAssignment, this))
-      if (showMuteButton) {
-        this.elements.mute.link.click($.proxy(this.onMuteClick, this))
-      }
-
       this.elements.settings.form.submit(this.submitSettingsForm.bind(this))
     },
     createModals() {
@@ -573,55 +551,6 @@ function setupHeader({showMuteButton = true}) {
       // FF hack - when reloading the page, firefox seems to "remember" the disabled state of this
       // button. So here we'll manually re-enable it.
       this.elements.settings.form.find('.submit_button').removeAttr('disabled')
-
-      if (showMuteButton) {
-        this.elements.mute.modal.dialog({
-          autoOpen: false,
-          buttons: [
-            {
-              text: I18n.t('cancel_button', 'Cancel'),
-              click: $.proxy(function() {
-                this.elements.mute.modal.dialog('close')
-              }, this)
-            },
-            {
-              text: I18n.t('mute_assignment', 'Mute Assignment'),
-              class: 'btn-primary btn-mute',
-              click: $.proxy(function() {
-                this.toggleMute()
-                this.elements.mute.modal.dialog('close')
-              }, this)
-            }
-          ],
-          modal: true,
-          resizable: false,
-          title: this.elements.mute.modal.data('title'),
-          width: 400
-        })
-        this.elements.unmute.modal.dialog({
-          autoOpen: false,
-          buttons: [
-            {
-              text: I18n.t('Cancel'),
-              click: $.proxy(function() {
-                this.elements.unmute.modal.dialog('close')
-              }, this)
-            },
-            {
-              text: I18n.t('Unmute Assignment'),
-              class: 'btn-primary btn-unmute',
-              click: $.proxy(function() {
-                this.toggleMute()
-                this.elements.unmute.modal.dialog('close')
-              }, this)
-            }
-          ],
-          modal: true,
-          resizable: false,
-          title: this.elements.unmute.modal.data('title'),
-          width: 400
-        })
-      }
     },
 
     toAssignment(e) {
@@ -635,8 +564,10 @@ function setupHeader({showMuteButton = true}) {
     },
 
     keyboardShortcutInfoModal() {
-      const questionMarkKeyDown = $.Event('keydown', {keyCode: 191})
-      $(document).trigger(questionMarkKeyDown)
+      if (!ENV.disable_keyboard_shortcuts) {
+        const questionMarkKeyDown = $.Event('keydown', {keyCode: 191, shiftKey: true})
+        $(document).trigger(questionMarkKeyDown)
+      }
     },
 
     submitSettingsForm(e) {
@@ -664,56 +595,6 @@ function setupHeader({showMuteButton = true}) {
         event.preventDefault()
       }
       this.elements.settings.form.dialog('open')
-    },
-
-    onMuteClick(e) {
-      e.preventDefault()
-      if (this.muted) {
-        this.elements.unmute.modal.dialog('open')
-      } else {
-        this.elements.mute.modal.dialog('open')
-      }
-    },
-
-    muteUrl() {
-      return `/courses/${this.courseId}/assignments/${this.assignmentId}/mute`
-    },
-
-    toggleMute() {
-      this.muted = !this.muted
-      const label = this.muted
-          ? I18n.t('unmute_assignment', 'Unmute Assignment')
-          : I18n.t('mute_assignment', 'Mute Assignment'),
-        action = this.muted ? 'mute' : 'unmute',
-        actions = {
-          /* Mute action */
-          mute() {
-            this.elements.mute.icon.removeClass('icon-unmuted').addClass('icon-muted')
-            $.ajaxJSON(
-              this.muteUrl(),
-              'put',
-              {status: true},
-              $.proxy(function() {
-                this.elements.mute.label.text(label)
-              }, this)
-            )
-          },
-
-          /* Unmute action */
-          unmute() {
-            this.elements.mute.icon.removeClass('icon-muted').addClass('icon-unmuted')
-            $.ajaxJSON(
-              this.muteUrl(),
-              'put',
-              {status: false},
-              $.proxy(function() {
-                this.elements.mute.label.text(label)
-              }, this)
-            )
-          }
-        }
-
-      actions[action].apply(this)
     }
   }
 }
@@ -1093,7 +974,7 @@ function initRubricStuff() {
     } else {
       data.graded_anonymously = utils.shouldHideStudentNames()
     }
-    const url = $('.update_rubric_assessment_url').attr('href')
+    const url = ENV.update_rubric_assessment_url
     const method = 'POST'
     EG.toggleFullRubric('close')
 
@@ -1103,19 +984,21 @@ function initRubricStuff() {
         rubricAssessment.updateRubricAssociation($rubric, response.rubric_association)
         delete response.rubric_association
       }
-      for (let i = 0; i < EG.currentStudent.rubric_assessments.length; i++) {
-        if (response.id === EG.currentStudent.rubric_assessments[i].id) {
-          $.extend(true, EG.currentStudent.rubric_assessments[i], response)
+
+      // If the student has a submission, update it with the data returned,
+      // otherwise we need to create a submission for them.
+      const assessedStudent = EG.setOrUpdateSubmission(response.artifact)
+
+      for (let i = 0; i < assessedStudent.rubric_assessments.length; i++) {
+        if (response.id === assessedStudent.rubric_assessments[i].id) {
+          $.extend(true, assessedStudent.rubric_assessments[i], response)
           found = true
           continue
         }
       }
       if (!found) {
-        EG.currentStudent.rubric_assessments.push(response)
+        assessedStudent.rubric_assessments.push(response)
       }
-
-      // if this student has a submission, update it with the data returned, otherwise we need to create a submission for them
-      EG.setOrUpdateSubmission(response.artifact)
 
       // this next part will take care of group submissions, so that when one member of the group gets assessesed then everyone in the group will get that same assessment.
       $.each(response.related_group_submissions_and_assessments, (i, submissionAndAssessment) => {
@@ -1144,6 +1027,9 @@ function initRubricStuff() {
 }
 
 function initKeyCodes() {
+  if (ENV.disable_keyboard_shortcuts) {
+    return
+  }
   const keycodeOptions = {
     keyCodes: 'j k p n c r g',
     ignore: 'input, textarea, embed, object'
@@ -2514,6 +2400,7 @@ EG = {
     const launchUrl = `${urlBase}&url=${encodeURIComponent(externalToolUrl)}`
     const iframe = SpeedgraderHelpers.buildIframe(htmlEscape(launchUrl), {
       className: 'tool_launch',
+      allow: iframeAllowances(),
       allowfullscreen: true
     })
     $div.html($.raw(iframe)).show()
@@ -2982,6 +2869,13 @@ EG = {
   },
 
   addSubmissionComment(draftComment) {
+    // Avoid submitting additional comments if a request is already in progress.
+    // This can happen if the user submits a comment and then switches students
+    // (which attempts to save a draft comment) before the request finishes.
+    if (commentSubmissionInProgress) {
+      return false
+    }
+
     // This is to continue existing behavior of creating finalized comments by default
     if (draftComment === undefined) {
       draftComment = false
@@ -2997,6 +2891,8 @@ EG = {
       // that means that they did not type a comment, attach a file or record any media. so dont do anything.
       return false
     }
+
+    commentSubmissionInProgress = true
     const url = `${assignmentUrl}/${isAnonymous ? 'anonymous_' : ''}submissions/${
       EG.currentStudent[anonymizableId]
     }`
@@ -3031,11 +2927,13 @@ EG = {
       window.setTimeout(() => {
         $rightside_inner.scrollTo($rightside_inner[0].scrollHeight, 500)
       })
+      commentSubmissionInProgress = false
     }
 
     const formError = (data, _xhr, _textStatus, _errorThrown) => {
       EG.handleGradingError(data)
       EG.revertFromFormSubmit({errorSubmitting: true})
+      commentSubmissionInProgress = false
     }
 
     if ($add_a_comment.find("input[type='file']:visible").length) {
@@ -3103,9 +3001,7 @@ EG = {
       }
     }
 
-    if (ENV.post_policies_enabled) {
-      renderPostGradesMenu()
-    }
+    renderPostGradesMenu()
 
     return student
   },
@@ -3120,8 +3016,8 @@ EG = {
       return
     }
 
-    const url = $('.update_submission_grade_url').attr('href')
-    const method = $('.update_submission_grade_url').attr('title')
+    const url = ENV.update_submission_grade_url
+    const method = 'POST'
     const formData = {
       'submission[assignment_id]': jsonData.id,
       [`submission[${anonymizableUserId}]`]: EG.currentStudent[anonymizableId],
@@ -3253,10 +3149,8 @@ EG = {
       $score.text('')
     }
 
-    if (ENV.post_policies_enabled) {
-      if (ENV.MANAGE_GRADES || (jsonData.context.concluded && ENV.READ_AS_ADMIN)) {
-        renderHiddenSubmissionPill(submission)
-      }
+    if (ENV.MANAGE_GRADES || (jsonData.context.concluded && ENV.READ_AS_ADMIN)) {
+      renderHiddenSubmissionPill(submission)
     }
     EG.updateStatsInHeader()
   },
@@ -3624,15 +3518,6 @@ EG = {
   },
 
   changeToSection(sectionId) {
-    // Update the selected section in old gradebook
-    if (sectionId === 'all') {
-      // We're removing all filters and resetting to default
-      userSettings.contextRemove('grading_show_only_section')
-    } else {
-      userSettings.contextSet('grading_show_only_section', sectionId)
-    }
-
-    // ...and in new gradebook
     if (ENV.settings_url) {
       $.post(ENV.settings_url, {selected_section_id: sectionId}, () => {
         SpeedgraderHelpers.reloadPage()
@@ -3672,11 +3557,19 @@ function setupSpeedGrader(gradingPeriods, speedGraderJsonResponse) {
 }
 
 function buildAlertMessage() {
-  const alertMessage = I18n.t(
-    'Something went wrong. Please try refreshing the page. If the problem persists, you can try loading a single student group in SpeedGrader by using the *Large Course setting*.',
-    {wrappers: [`<a href="/courses/${ENV.course_id}/settings#course_large_course">$1</a>`]}
-  )
-  return {__html: alertMessage.string}
+  let alertMessage
+  if (
+    ENV.filter_speed_grader_by_student_group_feature_enabled &&
+    !ENV.filter_speed_grader_by_student_group
+  ) {
+    alertMessage = I18n.t(
+      'Something went wrong. Please try refreshing the page. If the problem persists, you can try loading a single student group in SpeedGrader by using the *Large Course setting*.',
+      {wrappers: [`<a href="/courses/${ENV.course_id}/settings#course_large_course">$1</a>`]}
+    ).string
+  } else {
+    alertMessage = I18n.t('Something went wrong. Please try refreshing the page.')
+  }
+  return {__html: alertMessage}
 }
 
 function speedGraderJSONErrorFn(_data, xhr, _textStatus, _errorThrown) {
@@ -3770,7 +3663,7 @@ function setupSelectors() {
   isAdmin = _.includes(ENV.current_user_roles, 'admin')
   snapshotCache = {}
   studentLabel = I18n.t('student', 'Student')
-  header = setupHeader({showMuteButton: !ENV.post_policies_enabled})
+  header = setupHeader()
 }
 
 function renderSettingsMenu() {
@@ -3791,7 +3684,8 @@ function renderSettingsMenu() {
     openOptionsModal: showOptionsModal,
     openKeyboardShortcutsModal: showKeyboardShortcutsModal,
     showModerationMenuItem: ENV.grading_role === 'moderator',
-    showHelpMenuItem: ENV.show_help_menu_item
+    showHelpMenuItem: ENV.show_help_menu_item,
+    showKeyboardShortcutsMenuItem: !ENV.disable_keyboard_shortcuts
   }
 
   const mountPoint = document.getElementById(SPEED_GRADER_SETTINGS_MOUNT_POINT)
@@ -3885,6 +3779,8 @@ export default {
       null,
       speedGraderJSONErrorFn
     )
+
+    commentSubmissionInProgress = false
 
     $.when(getGradingPeriods(), speedGraderJsonDfd).then(setupSpeedGrader)
 

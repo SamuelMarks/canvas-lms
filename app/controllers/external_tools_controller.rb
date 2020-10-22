@@ -29,8 +29,10 @@ class ExternalToolsController < ApplicationController
   before_action :require_user, only: [:generate_sessionless_launch]
   before_action :get_context, :only => [:retrieve, :show, :resource_selection]
   skip_before_action :verify_authenticity_token, only: :resource_selection
+
   include Api::V1::ExternalTools
   include Lti::RedisMessageClient
+  include Lti::Concerns::SessionlessLaunches
 
   WHITELISTED_QUERY_PARAMS = [
     :platform
@@ -62,6 +64,7 @@ class ExternalToolsController < ApplicationController
   #        "updated_at": "2037-07-28T19:38:31Z",
   #        "privacy_level": "anonymous",
   #        "custom_fields": {"key": "value"},
+  #        "is_rce_favorite": false
   #        "account_navigation": {
   #             "canvas_icon_class": "icon-lti",
   #             "icon_url": "...",
@@ -140,7 +143,7 @@ class ExternalToolsController < ApplicationController
   end
 
   def retrieve
-    @tool = ContextExternalTool.find_external_tool(params[:url], @context)
+    @tool = ContextExternalTool.find_external_tool(params[:url], @context, nil, nil, params[:client_id])
     if !@tool
       flash[:error] = t "#application.errors.invalid_external_tool", "Couldn't find valid settings for this link"
       redirect_to named_context_url(@context, :context_url)
@@ -281,6 +284,7 @@ class ExternalToolsController < ApplicationController
   # @response_field updated_at Timestamp of last update
   # @response_field privacy_level What information to send to the external tool, "anonymous", "name_only", "public"
   # @response_field custom_fields Custom fields that will be sent to the tool consumer
+  # @response_field is_rce_favorite Boolean determining whether this tool should be in a preferred location in the RCE.
   # @response_field account_navigation The configuration for account navigation links (see create API for values)
   # @response_field assignment_selection The configuration for assignment selection links (see create API for values)
   # @response_field course_home_sub_navigation The configuration for course home navigation links (see create API for values)
@@ -384,6 +388,10 @@ class ExternalToolsController < ApplicationController
 
       @lti_launch = lti_launch(tool: @tool, selection_type: placement, post_live_event: true)
       return unless @lti_launch
+
+      # Some LTI apps have tutorial trays. Provide some details to the client to know what tray, if any, to show
+      js_env(:LTI_LAUNCH_RESOURCE_URL => @lti_launch.resource_url)
+      set_tutorial_js_env
 
       render Lti::AppUtil.display_template(@tool.display_type(placement), display_override: params[:display])
     end
@@ -499,7 +507,10 @@ class ExternalToolsController < ApplicationController
     opts = default_opts.merge(opts)
 
     assignment = api_find(@context.assignments.active, params[:assignment_id]) if params[:assignment_id]
-    expander = variable_expander(assignment: assignment, tool: tool, launch: lti_launch, post_message_token: opts[:launch_token])
+    expander = variable_expander(assignment: assignment,
+      tool: tool, launch: lti_launch,
+      post_message_token: opts[:launch_token],
+      secure_params: params[:secure_params])
 
     adapter = if tool.use_1_3?
       a = Lti::LtiAdvantageAdapter.new(
@@ -666,6 +677,13 @@ class ExternalToolsController < ApplicationController
   #   Custom fields that will be sent to the tool consumer; can be used
   #   multiple times
   #
+  # @argument is_rce_favorite [Boolean]
+  #   (Deprecated in favor of {api:ExternalToolsController#add_rce_favorite Add tool to RCE Favorites} and
+  #   {api:ExternalToolsController#remove_rce_favorite Remove tool from RCE Favorites})
+  #   Whether this tool should appear in a preferred location in the RCE.
+  #   This only applies to tools in root account contexts that have an editor
+  #   button placement.
+  #
   # @argument account_navigation[url] [String]
   #   The url of the external tool for account navigation
   #
@@ -725,9 +743,14 @@ class ExternalToolsController < ApplicationController
   #   "_blank"	Launches the external tool in a new window or tab.
   #   "_self"	(Default) Launches the external tool in an iframe inside of Canvas.
   #
-  # @argument course_navigation[default] [Boolean]
-  #   Whether the navigation option will show in the course by default or
-  #   whether the teacher will have to explicitly enable it
+  # @argument course_navigation[default] [String, "disabled"|"enabled"]
+  #   If set to "disabled" the tool will not appear in the course navigation
+  #   until a teacher explicitly enables it.
+  #
+  #   If set to "enabled" the tool will appear in the course navigation
+  #   without requiring a teacher to explicitly enable it.
+  #
+  #   defaults to "enabled"
   #
   # @argument course_navigation[display_type] [String]
   #   The layout type to use when launching the tool. Must be
@@ -806,7 +829,9 @@ class ExternalToolsController < ApplicationController
   #   The url of the external tool
   #
   # @argument resource_selection[enabled] [Boolean]
-  #   Set this to enable this feature
+  #   Set this to enable this feature. If set to false,
+  #   not_selectable must also be set to true in order to hide this tool
+  #   from the selection UI in modules and assignments.
   #
   # @argument resource_selection[icon_url] [String]
   #   The url of the icon to show in the module external tool list
@@ -834,7 +859,8 @@ class ExternalToolsController < ApplicationController
   #   "by_url"
   #
   # @argument not_selectable [Boolean]
-  #   Default: false, if set to true the tool won't show up in the external tool
+  #   Default: false. If set to true, and if resource_selection is set to false,
+  #   the tool won't show up in the external tool
   #   selection UI in modules and assignments
   #
   # @argument oauth_compliant [Boolean]
@@ -854,7 +880,6 @@ class ExternalToolsController < ApplicationController
   #        -F 'custom_fields[key1]=value1' \
   #        -F 'custom_fields[key2]=value2' \
   #        -F 'course_navigation[text]=Course Materials' \
-  #        -F 'course_navigation[default]=false'
   #        -F 'course_navigation[enabled]=true'
   #
   # @example_request
@@ -894,7 +919,7 @@ class ExternalToolsController < ApplicationController
       end
       set_tool_attributes(@tool, external_tool_params)
     end
-    check_for_duplication(@tool)
+    @tool.check_for_duplication(params.dig(:external_tool, :verify_uniqueness).present?)
     if @tool.errors.blank? && @tool.save
       invalidate_nav_tabs_cache(@tool)
       if api_request?
@@ -1015,13 +1040,60 @@ class ExternalToolsController < ApplicationController
     render json: {jwt_token: Canvas::Security.create_jwt(params, nil, tool.shared_secret)}
   end
 
-  private
+  # @API Add tool to RCE Favorites
+  # Add the specified editor_button external tool to a preferred location in the RCE
+  # for courses in the given account and its subaccounts (if the subaccounts
+  # haven't set their own RCE Favorites). Cannot set more than 2 RCE Favorites.
+  #
+  # @example_request
+  #
+  #   curl -X POST 'https://<canvas>/api/v1/accounts/<account_id>/external_tools/rce_favorites/<id>' \
+  #        -H "Authorization: Bearer <token>"
+  def add_rce_favorite
+    if authorized_action(@context, @current_user, :lti_add_edit)
+      @tool = ContextExternalTool.find_external_tool_by_id(params[:id], @context)
+      raise ActiveRecord::RecordNotFound unless @tool
+      unless @tool.can_be_rce_favorite?
+        return render json: {message: "Tool does not have an editor_button placement"}, status: :bad_request
+      end
 
-  def check_for_duplication(tool)
-    if tool.duplicated_in_context? && params.dig(:external_tool, :verify_uniqueness).present?
-      tool.errors.add(:tool_currently_installed, 'The tool is already installed in this context.')
+      favorite_ids = @context.get_rce_favorite_tool_ids
+      favorite_ids << @tool.global_id
+      favorite_ids.uniq!
+      if favorite_ids.length > 2
+        valid_ids = ContextExternalTool.all_tools_for(@context, placements: [:editor_button]).pluck(:id).map{|id| Shard.global_id_for(id)}
+        favorite_ids = favorite_ids & valid_ids # try to clear out any possibly deleted tool references first before causing a fuss
+      end
+      if favorite_ids.length > 2
+        render json: {message: "Cannot have more than 2 favorited tools"}, status: :bad_request
+      else
+        @context.settings[:rce_favorite_tool_ids] = {:value => favorite_ids}
+        @context.save!
+        render json: {rce_favorite_tool_ids: favorite_ids.map{|id| Shard.relative_id_for(id, Shard.current, Shard.current)}}
+      end
     end
   end
+
+  # @API Remove tool from RCE Favorites
+  # Remove the specified external tool from a preferred location in the RCE
+  # for the given account
+  #
+  # @example_request
+  #
+  #   curl -X DELETE 'https://<canvas>/api/v1/accounts/<account_id>/external_tools/rce_favorites/<id>' \
+  #        -H "Authorization: Bearer <token>"
+  def remove_rce_favorite
+    if authorized_action(@context, @current_user, :lti_add_edit)
+      favorite_ids = @context.get_rce_favorite_tool_ids
+      if favorite_ids.delete(Shard.global_id_for(params[:id]))
+        @context.settings[:rce_favorite_tool_ids] = {:value => favorite_ids}
+        @context.save!
+      end
+      render json: {rce_favorite_tool_ids: favorite_ids.map{|id| Shard.relative_id_for(id, Shard.current, Shard.current)}}
+    end
+  end
+
+  private
 
   def generate_module_item_sessionless_launch
     module_item_id = params[:module_item_id]
@@ -1101,20 +1173,19 @@ class ExternalToolsController < ApplicationController
     end
 
     if @tool.use_1_3?
-      # generate URL to log in user and launch LTI 1.3 tool in one go
-      # only allow from API, and not from files domain, as /login/session_token does
-      return render_unauthorized_action unless @access_token
-      return render_unauthorized_action if HostUrl.is_file_host?(request.host_with_port)
-
-      login_pseudonym = @real_current_pseudonym || @current_pseudonym
-      session_token = SessionToken.new(
-        login_pseudonym.global_id,
-        current_user_id: @real_current_user ? @current_user.global_id : nil,
-        used_remember_me_token: true
-      ).to_s
-
-      context_path = "#{@context.is_a?(Account) ? account_external_tools_url(@context) : course_external_tools_url(@context)}/#{@tool.id}"
-      render :json => { id: @tool.id, name: @tool.name, url: "#{context_path}?display=borderless&session_token=#{session_token}" }
+      # Create a launch URL that uses a session token to
+      # initialize a Canvas session and launch the tool.
+      begin
+        launch_url = sessionless_launch_url(
+          options,
+          @context,
+          @tool,
+          generate_session_token
+        )
+        render :json => { id: @tool.id, name: @tool.name, url: launch_url }
+      rescue UnauthorizedClient
+        render_unauthorized_action
+      end
     else
       # generate the launch
       opts = {
@@ -1173,10 +1244,10 @@ class ExternalToolsController < ApplicationController
   end
 
   def set_tool_attributes(tool, params)
-    attrs = Lti::ResourcePlacement::PLACEMENTS
+    attrs = Lti::ResourcePlacement.valid_placements(@domain_root_account)
     attrs += [:name, :description, :url, :icon_url, :canvas_icon_class, :domain, :privacy_level, :consumer_key, :shared_secret,
               :custom_fields, :custom_fields_string, :text, :config_type, :config_url, :config_xml, :not_selectable, :app_center_id,
-              :oauth_compliant]
+              :oauth_compliant, :is_rce_favorite]
     attrs += [:allow_membership_service_access] if @context.root_account.feature_enabled?(:membership_service_for_lti_tools)
 
     attrs.each do |prop|

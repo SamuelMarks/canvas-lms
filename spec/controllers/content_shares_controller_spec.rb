@@ -157,6 +157,13 @@ describe ContentSharesController do
         expect(json[1]['content_export']).to be_present
       end
 
+      it "includes sender information" do
+        user_session @teacher_2
+        get :index, params: { user_id: @teacher_2.id, list: 'received', per_page: 1 }
+        json = JSON.parse(response.body.sub(/^while\(1\);/, ''))
+        expect(json.map { |share| share['sender']['id'] }).to eq([@teacher_1.id])
+      end
+
       it "paginates received content shares" do
         Timecop.travel(1.hour.ago) do
           export2 = @course_1.content_exports.create!(settings: {"selected_content" => {"quizzes" => {'foo' => '1'}, "content_tags" => {'bar' => '1'}, "context_modules" => {'baz' => '1'}}})

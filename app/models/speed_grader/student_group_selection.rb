@@ -55,7 +55,7 @@ module SpeedGrader
             :student_not_in_selected_group
           end
         end
-      elsif initial_group.blank? || initial_group.group_memberships.active.where(moderator: false).none?
+      elsif initial_group.blank? || initial_group.group_memberships.active.where(moderator: [false, nil]).none?
         # We weren't given a specific student, but either we didn't previously
         # select a group or we've selected an empty one. Get the first group for
         # the course with at least one student.
@@ -88,7 +88,7 @@ module SpeedGrader
 
     def initial_group
       @initial_group ||= begin
-        selected_group_id = current_user.preferences.dig(:gradebook_settings, course.id, 'filter_rows_by', 'student_group_id')
+        selected_group_id = current_user.get_preference(:gradebook_settings, course.global_id)&.dig('filter_rows_by', 'student_group_id')
         selected_group_id.present? ? Group.find_by(id: selected_group_id) : nil
       end
     end

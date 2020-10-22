@@ -32,6 +32,10 @@ class SisBatch < ActiveRecord::Base
   belongs_to :generated_diff, class_name: 'Attachment'
   belongs_to :batch_mode_term, class_name: 'EnrollmentTerm'
   belongs_to :user
+  has_many :auditor_course_records,
+    class_name: "Auditors::ActiveRecord::CourseRecord",
+    dependent: :destroy,
+    inverse_of: :course
 
   validates_presence_of :account_id, :workflow_state
   validates_length_of :diffing_data_set_identifier, maximum: 128
@@ -69,7 +73,7 @@ class SisBatch < ActiveRecord::Base
       batch.user = user
       batch.save
 
-      att = create_data_attachment(batch, attachment)
+      att = Attachment.create_data_attachment(batch, attachment)
       batch.attachment = att
 
       yield batch if block_given?
@@ -78,20 +82,6 @@ class SisBatch < ActiveRecord::Base
 
       batch
     end
-  end
-
-  def self.create_data_attachment(batch, data, display_name=nil)
-    batch.shard.activate do
-      Attachment.new.tap do |att|
-        Attachment.skip_3rd_party_submits(true)
-        att.context = batch
-        att.display_name = display_name if display_name
-        Attachments::Storage.store_for_attachment(att, data)
-        att.save!
-      end
-    end
-  ensure
-    Attachment.skip_3rd_party_submits(false)
   end
 
   def self.add_error(csv, message, sis_batch:, row: nil, failure: false, backtrace: nil, row_info: nil)
@@ -280,7 +270,7 @@ class SisBatch < ActiveRecord::Base
   def fast_update_progress(val)
     return true if val == self.progress
     self.progress = val
-    state = SisBatch.connection.select_value(<<-SQL)
+    state = SisBatch.connection.select_value(<<~SQL)
       UPDATE #{SisBatch.quoted_table_name} SET progress=#{val} WHERE id=#{self.id} RETURNING workflow_state
     SQL
     raise SisBatch::Aborted if state == 'aborted'
@@ -309,6 +299,13 @@ class SisBatch < ActiveRecord::Base
                                        clear_sis_stickiness: options[:clear_sis_stickiness])
   end
 
+  def compute_file_size(file)
+    CanvasUnzip.compute_uncompressed_size(file.path)
+  rescue CanvasUnzip::UnknownArchiveType
+    # if it's not a zip file, just return the size of the file itself
+    file.size
+  end
+
   def generate_diff
     return if self.diffing_remaster # joined the chain, but don't actually want to diff this one
     return unless self.diffing_data_set_identifier
@@ -325,7 +322,9 @@ class SisBatch < ActiveRecord::Base
     previous_zip = previous_batch.try(:download_zip)
     return unless previous_zip
 
-    if change_threshold && file_diff_percent(@data_file.size, previous_zip.size) > change_threshold
+    current_file_size = compute_file_size(@data_file)
+    previous_zip_size = compute_file_size(previous_zip)
+    if change_threshold && file_diff_percent(current_file_size, previous_zip_size) > change_threshold
       SisBatch.add_error(nil, "Diffing not performed because file size difference exceeded threshold", sis_batch: self)
       return
     end
@@ -343,7 +342,7 @@ class SisBatch < ActiveRecord::Base
 
     self.data[:diffed_against_sis_batch_id] = previous_batch.id
 
-    self.generated_diff = SisBatch.create_data_attachment(
+    self.generated_diff = Attachment.create_data_attachment(
       self,
       Rack::Test::UploadedFile.new(diffed_data_file.path, 'application/zip'),
       t(:diff_filename, "sis_upload_diffed_%{id}.zip", :id => self.id)
@@ -500,7 +499,7 @@ class SisBatch < ActiveRecord::Base
 
   def term_course_scope
     if data[:supplied_batches].include?(:course)
-      scope = account.all_courses.active.where.not(sis_batch_id: nil, sis_source_id: nil)
+      scope = account.all_courses.active.where.not(sis_batch_id: nil).where.not(sis_source_id: nil)
       scope.where(enrollment_term_id: batch_mode_terms)
     end
   end
@@ -540,7 +539,7 @@ class SisBatch < ActiveRecord::Base
   def term_sections_scope
     if data[:supplied_batches].include?(:section)
       scope = self.account.course_sections.active.where(courses: {enrollment_term_id: batch_mode_terms})
-      scope = scope.where.not(sis_batch_id: nil, sis_source_id: nil)
+      scope = scope.where.not(sis_batch_id: nil).where.not(sis_source_id: nil)
       scope.joins("INNER JOIN #{Course.quoted_table_name} ON courses.id=COALESCE(nonxlist_course_id, course_id)").readonly(false)
     end
   end
@@ -720,7 +719,7 @@ class SisBatch < ActiveRecord::Base
         csv << row
       end
     end
-    self.errors_attachment = SisBatch.create_data_attachment(
+    self.errors_attachment = Attachment.create_data_attachment(
       self,
       Rack::Test::UploadedFile.new(file, 'csv', true),
       "sis_errors_attachment_#{id}.csv"
@@ -753,14 +752,14 @@ class SisBatch < ActiveRecord::Base
   end
 
   def restore_enrollment_data(scope, restore_progress, count, total)
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       scope.active.where(previous_workflow_state: 'deleted').find_in_batches do |batch|
-        Shackles.activate(:master) do
+        GuardRail.activate(:primary) do
           Enrollment::BatchStateUpdater.destroy_batch(batch.map(&:context_id))
           count = update_restore_progress(restore_progress, batch, count, total)
         end
       end
-      Shackles.activate(:master) do
+      GuardRail.activate(:primary) do
         count = restore_workflow_states(scope, 'Enrollment', restore_progress, count, total)
       end
     end
@@ -768,15 +767,15 @@ class SisBatch < ActiveRecord::Base
   end
 
   def restore_group_categories(scope, restore_progress, count, total)
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       scope.active.where(previous_workflow_state: 'active').find_in_batches do |gcs|
-        Shackles.activate(:master) do
+        GuardRail.activate(:primary) do
           GroupCategory.where(id: gcs.map(&:context_id)).update_all(deleted_at: nil, updated_at: Time.zone.now)
           count = update_restore_progress(restore_progress, gcs, count, total)
         end
       end
       scope.active.where.not(previous_workflow_state: 'active').find_in_batches do |gcs|
-        Shackles.activate(:master) do
+        GuardRail.activate(:primary) do
           GroupCategory.where(id: gcs.map(&:context_id)).update_all(deleted_at: Time.zone.now, updated_at: Time.zone.now)
           count = update_restore_progress(restore_progress, gcs, count, total)
         end
@@ -786,9 +785,9 @@ class SisBatch < ActiveRecord::Base
   end
 
   def restore_workflow_states(scope, type, restore_progress, count, total)
-    Shackles.activate(:slave) do
+    GuardRail.activate(:secondary) do
       scope.active.order(:context_id).find_in_batches(batch_size: 5_000) do |data|
-        Shackles.activate(:master) do
+        GuardRail.activate(:primary) do
           ActiveRecord::Base.unique_constraint_retry do |retry_count|
             if retry_count == 0
               # restore the items and return the ids of the items that changed
@@ -880,7 +879,7 @@ class SisBatch < ActiveRecord::Base
   end
 
   def restore_sql(type, data)
-    <<-SQL
+    <<~SQL
       UPDATE #{type.constantize.quoted_table_name} AS t
         SET workflow_state = x.workflow_state,
             updated_at = NOW()

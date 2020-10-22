@@ -72,16 +72,27 @@ module AccountReports::ReportHelper
     end
   end
 
-  def start_at
-    if @account_report.value_for_param("start_at")
-      @start ||= account_time_parse(@account_report.parameters["start_at"])
+  def datetime_from_param(param)
+    if @account_report.value_for_param(param)
+      account_time_parse(@account_report.parameters[param])
     end
   end
 
+  def restricted_datetime_from_param(param, earliest: nil, latest: nil, fallback: nil)
+    time = datetime_from_param(param)
+    return fallback if time.nil? && fallback
+    return unless time
+    time = earliest if earliest&.> time
+    time = latest if latest&.< time
+    time
+  end
+
+  def start_at
+    @start ||= datetime_from_param('start_at')
+  end
+
   def end_at
-    if @account_report.value_for_param("end_at")
-      @end ||= account_time_parse(@account_report.parameters["end_at"])
-    end
+    @end ||= datetime_from_param('end_at')
   end
 
   def course
@@ -251,7 +262,7 @@ module AccountReports::ReportHelper
     if account_report.value_for_param "extra_text"
       options = account_report.parameters["extra_text"]
     end
-    AccountReports.message_recipient(
+    AccountReports.finalize_report(
       account_report,
       I18n.t(
         'account_reports.default.message',
@@ -261,22 +272,22 @@ module AccountReports::ReportHelper
     )
   end
 
-  def write_report(headers, enable_i18n_features = false, &block)
-    file = generate_and_run_report(headers, 'csv', enable_i18n_features, &block)
-    Shackles.activate(:master) { send_report(file) }
+  def write_report(headers, enable_i18n_features = false, compile: false, &block)
+    file = generate_and_run_report(headers, 'csv', enable_i18n_features, compile: compile, &block)
+    GuardRail.activate(:primary) { send_report(file) }
   end
 
-  def generate_and_run_report(headers = nil, extension = 'csv', enable_i18n_features = false)
+  def generate_and_run_report(headers = nil, extension = 'csv', enable_i18n_features = false, compile: false)
     file = AccountReports.generate_file(@account_report, extension)
     options = {}
     if enable_i18n_features
       options = CsvWithI18n.csv_i18n_settings(@account_report.user)
     end
-    ExtendedCSV.open(file, "w", options) do |csv|
+    ExtendedCSV.open(file, "w", **options) do |csv|
       csv.instance_variable_set(:@account_report, @account_report)
       csv << headers unless headers.nil?
-      Shackles.activate(:slave) { yield csv } if block_given?
-      Shackles.activate(:master) { @account_report.update_attribute(:current_line, csv.lineno) }
+      activate_report_db(use_primary: compile) { yield csv } if block_given?
+      GuardRail.activate(:primary) { @account_report.update_attribute(:current_line, csv.lineno) }
     end
     file
   end
@@ -349,11 +360,27 @@ module AccountReports::ReportHelper
       @account_report.add_report_runner(batch)
       ids_so_far += batch.length
       if ids_so_far >= Setting.get("ids_per_report_runner_batch", 10_000).to_i
-        @account_report.write_report_runners
+        GuardRail.activate(:primary) { @account_report.write_report_runners }
         ids_so_far = 0
       end
     end
-    @account_report.write_report_runners
+    GuardRail.activate(:primary) { @account_report.write_report_runners }
+  end
+
+  def activate_report_db(use_primary: false, &block)
+    # for parallel account_reports we write rows to account_report_rows and then
+    # read from account_report_rows to generate the csv file. If this is done on
+    # a replica, it can be lagging and not get all the records. Typical reports,
+    # this would not be a problem because it is old data for a report...
+    # but when we just wrote the data it may not exist, so use the primary
+    # database.
+    if use_primary == true
+      GuardRail.activate(:primary, &block)
+    elsif !!Shard.current.database_server.config[:report] && Setting.get('use_report_dbs_for_reports', 'true') == 'true'
+      GuardRail.activate(:report, &block)
+    else
+      GuardRail.activate(:secondary, &block)
+    end
   end
 
   def run_account_report_runner(report_runner, headers, files: nil)
@@ -367,7 +394,7 @@ module AccountReports::ReportHelper
       # runners can be completed before they get here, and we should not try to process them.
       unless report_runner.workflow_state == 'completed'
         report_runner.start
-        Shackles.activate(:slave) { AccountReports::REPORTS[@account_report.report_type].parallel_proc.call(@account_report, report_runner) }
+        activate_report_db { AccountReports::REPORTS[@account_report.report_type].parallel_proc.call(@account_report, report_runner) }
       end
     rescue => e
       report_runner.fail
@@ -385,8 +412,10 @@ module AccountReports::ReportHelper
   end
 
   def write_report_from_rows(headers)
-    write_report headers do |csv|
-      @account_report.account_report_rows.order(:account_report_runner_id, :row_number).find_each { |record| csv << record.row }
+    write_report(headers, compile: true) do |csv|
+      @account_report.account_report_rows.order(:account_report_runner_id, :row_number).find_in_batches(strategy: :cursor) do |batch|
+        batch.each { |record| csv << record.row }
+      end
     end
   end
 
@@ -394,19 +423,22 @@ module AccountReports::ReportHelper
     csvs = {}
     files.each do |file, headers_for_file|
       if @account_report.account_report_rows.where(file: file).exists?
-        csvs[file] = generate_and_run_report(headers_for_file) do |csv|
-          @account_report.account_report_rows.where(file: file).order(:account_report_runner_id, :row_number).find_each { |record| csv << record.row }
+        csvs[file] = generate_and_run_report(headers_for_file, compile: true) do |csv|
+          @account_report.account_report_rows.where(file: file).order(:account_report_runner_id, :row_number).find_in_batches(strategy: :cursor) do |batch|
+            batch.each { |record| csv << record.row }
+          end
         end
       else
-        csvs[file] = generate_and_run_report(headers_for_file)
+        csvs[file] = generate_and_run_report(headers_for_file, compile: true)
       end
     end
     send_report(csvs)
   end
 
   def fail_with_error(error)
-    Shackles.activate(:master) do
-      @account_report.account_report_runners.incomplete.update_all(workflow_state: 'aborted')
+    GuardRail.activate(:primary) do
+      # this should leave the runner that caused a failure to be in running or error state.
+      @account_report.account_report_runners.in_progress.update_all(workflow_state: 'aborted')
       @account_report.delete_account_report_rows
       Canvas::Errors.capture_exception(:account_report, error)
       @account_report.workflow_state = 'error'
@@ -436,7 +468,7 @@ module AccountReports::ReportHelper
     updates[:current_line] = current_line if account_report.current_line < current_line
     updates[:progress] = progress if account_report.progress < progress
     unless updates.empty?
-      Shackles.activate(:master) do
+      GuardRail.activate(:primary) do
         AccountReport.where(id: account_report).where("progress <?", progress).update_all(updates)
       end
     end
@@ -446,7 +478,6 @@ module AccountReports::ReportHelper
     return false if account_report.account_report_runners.incomplete.exists?
     AccountReport.transaction do
       @account_report.reload(lock: true)
-      return false if account_report.workflow_state == 'error'
       if @account_report.workflow_state == 'running'
         @account_report.workflow_state = 'compiling'
         @account_report.save!
@@ -460,7 +491,7 @@ module AccountReports::ReportHelper
   class ExtendedCSV < CsvWithI18n
     def <<(row)
       if lineno % 1_000 == 0
-        Shackles.activate(:master) do
+        GuardRail.activate(:primary) do
           report = self.instance_variable_get(:@account_report).reload
           updates = {}
           updates[:current_line] = lineno
@@ -497,7 +528,7 @@ module AccountReports::ReportHelper
     else
       @account_report.parameters["extra_text"] = text
     end
-    Shackles.activate(:master) do
+    GuardRail.activate(:primary) do
       @account_report.save!
     end
   end

@@ -228,25 +228,32 @@ class StreamItem < ActiveRecord::Base
 
   def self.generate_or_update(object)
     item = nil
-    StreamItem.unique_constraint_retry do
-      # we can't coalesce messages that weren't ever saved to the DB
-      if !new_message?(object)
-        item = object.stream_item
-      end
-      if item
-        item.regenerate!(object)
-      else
-        item = self.new
-        item.generate_data(object)
-        item.save!
-        # prepopulate the reverse association
-        # (mostly useful for specs that regenerate stream items
-        #  multiple times without reloading the asset)
-        if !new_message?(object)
-          object.stream_item = item
+    # we can't coalesce messages that weren't ever saved to the DB
+    if !new_message?(object)
+      item = object.stream_item
+    end
+    if item
+      item.regenerate!(object)
+    else
+      item = self.new
+      item.generate_data(object)
+      StreamItem.unique_constraint_retry do |retry_count|
+        if retry_count == 0
+          item.save!
+        else
+          item = nil # if it fails just carry on - it got created somewhere else so grab it later
         end
       end
+      item ||= object.reload.stream_item
+
+      # prepopulate the reverse association
+      # (mostly useful for specs that regenerate stream items
+      #  multiple times without reloading the asset)
+      if !new_message?(object)
+        object.stream_item = item
+      end
     end
+
     item
   end
 
@@ -282,9 +289,9 @@ class StreamItem < ActiveRecord::Base
             :context_id => l_context_id,
           }
         end
-        if object.is_a?(Submission) && object.assignment.muted?
-          # set the hidden flag if an assignment and muted (for the owner of the submission)
-          if owner_insert = inserts.detect{|i| i[:user_id] == object.user_id}
+        if object.is_a?(Submission) && !object.posted?
+          # set the hidden flag if this submission is not posted
+          if (owner_insert = inserts.detect{|i| i[:user_id] == object.user_id})
             owner_insert[:hidden] = true
           end
         end
@@ -384,10 +391,10 @@ class StreamItem < ActiveRecord::Base
       User.where(:id => user_ids.to_a).touch_all
     end
 
-    Shackles.activate(:deploy) do
-      Shard.current.database_server.unshackle do
-        StreamItem.connection.execute("VACUUM ANALYZE #{StreamItem.quoted_table_name}")
-        StreamItemInstance.connection.execute("VACUUM ANALYZE #{StreamItemInstance.quoted_table_name}")
+    GuardRail.activate(:deploy) do
+      Shard.current.database_server.unguard do
+        StreamItem.vacuum
+        StreamItemInstance.vacuum
         ActiveRecord::Base.connection_pool.current_pool.disconnect! unless Rails.env.test?
       end
     end

@@ -20,7 +20,6 @@ module SIS
   class UserImporter < BaseImporter
 
     def process(messages, login_only: false)
-      start = Time.zone.now
       importer = Work.new(@batch, @root_account, @logger, messages)
       User.skip_updating_account_associations do
         User.process_as_sis(@sis_options) do
@@ -36,7 +35,7 @@ module SIS
       User.update_account_associations(importer.users_to_update_account_associations)
       importer.pseudos_to_set_sis_batch_ids.in_groups_of(1000, false) {|ids| Pseudonym.where(id: ids).update_all(sis_batch_id: @batch.id)}
       SisBatchRollBackData.bulk_insert_roll_back_data(importer.roll_back_data)
-      @logger.debug("Users took #{Time.zone.now - start} seconds")
+
       importer.success_count
     end
 
@@ -64,8 +63,6 @@ module SIS
 
       # Pass a single instance of SIS::Models::User
       def add_user(user, login_only: false)
-        @logger.debug("Processing User #{(login_only ? user.login_array : user.to_a).inspect}")
-
         raise ImportError, "No user_id given for a user" if user.user_id.blank?
         raise ImportError, "No login_id given for user #{user.user_id}" if user.login_id.blank?
         raise ImportError, "Improper status for user #{user.user_id}" unless user.status =~ /\A(active|deleted)/i
@@ -117,10 +114,20 @@ module SIS
         return unless any_left_to_process?
         while !@batched_users.empty?
           user_row = @batched_users.shift
-          @logger.debug("Processing User #{user_row.inspect}")
-
           pseudo = @root_account.pseudonyms.where(sis_user_id: user_row.user_id.to_s).take
-          pseudo_by_login = @root_account.pseudonyms.active.by_unique_id(user_row.login_id).take
+          if user_row.authentication_provider_id.present?
+            unless @authentication_providers.key?(user_row.authentication_provider_id)
+              begin
+                @authentication_providers[user_row.authentication_provider_id] =
+                  @root_account.authentication_providers.active.find(user_row.authentication_provider_id)
+              rescue ActiveRecord::RecordNotFound
+                @authentication_providers[user_row.authentication_provider_id] = nil
+              end
+            end
+            pseudo_by_login = @root_account.pseudonyms.active.by_unique_id(user_row.login_id).where(authentication_provider_id: @authentication_providers[user_row.authentication_provider_id]).take
+          else
+            pseudo_by_login = @root_account.pseudonyms.active.by_unique_id(user_row.login_id).take
+          end
           pseudo_by_integration = nil
           pseudo_by_integration = @root_account.pseudonyms.where(integration_id: user_row.integration_id.to_s).take if user_row.integration_id.present?
           status_is_active = !(user_row.status =~ /\Adeleted/i)
@@ -167,7 +174,7 @@ module SIS
           else
             if login_only
               if user_row.root_account_id.present?
-                root_account = root_account_from_id(user_row.root_account_id)
+                root_account = root_account_from_id(user_row.root_account_id, user_row)
                 next unless root_account
               else
                 root_account = @root_account
@@ -206,12 +213,17 @@ module SIS
           should_add_account_associations = false
           should_update_account_associations = false
 
+          user.pronouns = user_row.pronouns if user_row.pronouns.present? && !user.stuck_sis_fields.include?(:pronouns)
+
           if !status_is_active && !user.new_record?
             if user.id == @batch&.user_id
               message = "Can't remove yourself user_id '#{user_row.user_id}'"
               @messages << SisBatch.build_error(user_row.csv, message, sis_batch: @batch, row: user_row.lineno, row_info: user_row.row)
               next
             end
+
+            # if the pseudonym is already deleted, we're done.
+            next if pseudo.workflow_state == 'deleted'
 
             # if this user is deleted and there are no more active logins,
             # we're going to delete any enrollments for this root account and
@@ -221,14 +233,6 @@ module SIS
 
           pseudo.unique_id = user_row.login_id unless pseudo.stuck_sis_fields.include?(:unique_id)
           if user_row.authentication_provider_id.present?
-            unless @authentication_providers.key?(user_row.authentication_provider_id)
-              begin
-                @authentication_providers[user_row.authentication_provider_id] =
-                  @root_account.authentication_providers.active.find(user_row.authentication_provider_id)
-              rescue ActiveRecord::RecordNotFound
-                @authentication_providers[user_row.authentication_provider_id] = nil
-              end
-            end
             unless (pseudo.authentication_provider = @authentication_providers[user_row.authentication_provider_id])
               message = "unrecognized authentication provider #{user_row.authentication_provider_id} for #{user_row.user_id}, skipping"
               @messages << SisBatch.build_error(user_row.csv, message, sis_batch: @batch, row: user_row.lineno, row_info: user_row.row)
@@ -305,11 +309,11 @@ module SIS
           if user_row.email.present? && EmailAddressValidator.valid?(user_row.email)
             # find all CCs for this user, and active conflicting CCs for all users
             # unless we're deleting this user, then only find CCs for this user
-            if status_is_active
-              cc_scope = CommunicationChannel.where("workflow_state='active' OR user_id=?", user)
-            else
-              cc_scope = user.communication_channels
-            end
+            cc_scope = if status_is_active
+                         CommunicationChannel.where("workflow_state='active' OR user_id=?", user).shard(user.shard)
+                       else
+                         user.communication_channels
+                       end
             cc_scope = cc_scope.email.by_path(user_row.email)
             limit = Setting.get("merge_candidate_search_limit", "100").to_i
             ccs = cc_scope.limit(limit + 1).to_a
@@ -332,7 +336,7 @@ module SIS
               sis_cc.destroy
               sis_cc = nil
             end
-            cc = sis_cc || other_cc || CommunicationChannel.new
+            cc = sis_cc || other_cc || user.communication_channels.new
             cc.user_id = user.id
             cc.pseudonym_id = pseudo.id
             cc.path = user_row.email
@@ -411,7 +415,7 @@ module SIS
 
       def other_user(_user_row, _pseudo); end
 
-      def root_account_from_id(_root_account_sis_id); end
+      def root_account_from_id(_root_account_sis_id, _user_row); end
 
       def maybe_write_roll_back_data
         if @roll_back_data.count > 1000
@@ -424,7 +428,7 @@ module SIS
         return false if @root_account.pseudonyms.active.where(user_id: user).where("sis_user_id != ? OR sis_user_id IS NULL", user_id).exists?
 
         enrollments = @root_account.enrollments.active.where(user_id: user).
-          where.not(workflow_state: 'deleted').select(:id, :type, :course_id, :course_section_id, :user_id, :workflow_state).to_a
+          select(:id, :type, :course_id, :course_section_id, :user_id, :workflow_state).to_a
         if enrollments.any?
           Enrollment.where(id: enrollments.map(&:id)).update_all(updated_at: Time.now.utc, workflow_state: 'deleted')
           EnrollmentState.where(enrollment_id: enrollments.map(&:id)).update_all(state: 'deleted', state_is_current: true, updated_at: Time.now.utc)

@@ -28,7 +28,7 @@
 #       "id": "Feature",
 #       "description": "",
 #       "properties": {
-#         "name": {
+#         "feature": {
 #           "description": "The symbolic name of the feature, used in FeatureFlags",
 #           "example": "fancy_wickets",
 #           "type": "string"
@@ -162,9 +162,13 @@ class FeatureFlagsController < ApplicationController
       flags = features.map { |fd|
         @context.lookup_feature_flag(fd.feature,
           override_hidden: Account.site_admin.grants_right?(@current_user, session, :read),
-          skip_cache: skip_cache
+          skip_cache: skip_cache,
+          # Hide flags that are forced ON at a higher level
+          # Undocumented flag for frontend use only
+          hide_inherited_enabled: params[:hide_inherited_enabled]
         )
       }.compact
+
       render json: flags.map { |flag| feature_with_flag_json(flag, @context, @current_user, session) }
     end
   end
